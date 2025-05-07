@@ -1,0 +1,17 @@
+Django
+djangorestframework
+djangorestframework-simplejwt
+graphene-django
+django-cors-headers
+mysqlclient
+pandas
+hypothesis
+pytest
+reportlab
+pytesseract
+pdfplumber
+Jinja2
+xhtml2pdf
+rarfile
+django-mssql-backend
+django-role-permissions

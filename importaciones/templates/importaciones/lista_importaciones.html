@@ -1,0 +1,48 @@
+<!-- importaciones/templates/importaciones/lista_importaciones.html -->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lista de Importaciones</title>
+</head>
+<body>
+    <h1>Lista de Ordenes de Compra</h1>
+
+    <!-- Formulario de selección de base de datos -->
+    <form method="post">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit">Consultar</button>
+    </form>
+
+    <!-- Mostrar la tabla solo si se han cargado registros -->
+    {% if registros %}
+        <table border="1">
+            <tr>
+                <th>OC</th>
+                <th>PRODUCTO</th>
+                <th>COD. ARTICULO</th>
+                <th>CANTIDAD</th>
+                <th>U M </th>
+                <th>PRECIO UN. </th>
+                <th>TOTAL</th>
+                <!-- Agrega el resto de las columnas necesarias -->
+            </tr>
+            {% for registro in registros %}
+            <tr>
+                <td>{{ registro.CNUMERO }}</td>
+                <td>{{ registro.CDESARTIC }}</td>
+                <td>{{ registro.CCODARTIC}}</td>
+                <td>{{ registro.NCANTIDAD }}</td>
+                <td>{{ registro.CUNIDAD}}</td>
+                <td>{{ registro.NPREUNITA}} $</td>
+                <td>{{ registro.NTOTVENT}} $</td>
+                <!-- Agrega el resto de los campos -->
+            </tr>
+            {% endfor %}
+        </table>
+    {% endif %}
+</body>
+</html>

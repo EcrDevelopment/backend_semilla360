@@ -1,0 +1,224 @@
+from pathlib import Path
+from datetime import timedelta
+import os
+
+# Build paths inside the project like this: BASE_DIR / 'subdir'.
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+
+# Quick-start development settings - unsuitable for production
+# See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
+
+# SECURITY WARNING: keep the secret key used in production secret!
+SECRET_KEY = 'django-insecure-zw1$5%r#acn5__hra*66qd6uem0bi3^w_5m*3#br7wvvxl0etj'
+
+# SECURITY WARNING: don't run with debug turned on in production!
+DEBUG = True
+
+ALLOWED_HOSTS = ['127.0.0.1', 'localhost','18.230.157.219','10.168.0.5']
+
+
+# Application definition
+
+INSTALLED_APPS = [
+    'django.contrib.admin',
+    'django.contrib.auth',
+    'django.contrib.contenttypes',
+    'django.contrib.sessions',
+    'django.contrib.messages',
+    'django.contrib.staticfiles',
+    'rolepermissions',
+    'rest_framework',
+    'rest_framework_simplejwt.token_blacklist',
+    'graphene_django',
+    'corsheaders',
+    'semilla360_front',
+    'localizacion',
+    'usuarios',
+    'importaciones',
+]
+
+
+MIDDLEWARE = [
+    'django.middleware.security.SecurityMiddleware',
+    'django.contrib.sessions.middleware.SessionMiddleware',
+    'django.middleware.common.CommonMiddleware',
+    'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django.contrib.messages.middleware.MessageMiddleware',
+    'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
+]
+
+ROOT_URLCONF = 'semilla360.urls'
+
+TEMPLATES = [
+    {
+        'BACKEND': 'django.template.backends.django.DjangoTemplates',
+        'DIRS': [
+        os.path.join(BASE_DIR, 'templates'),  # Para plantillas en el directorio raíz
+        ],
+        'APP_DIRS': True,
+        'OPTIONS': {
+            'context_processors': [
+                'django.template.context_processors.debug',
+                'django.template.context_processors.request',
+                'django.contrib.auth.context_processors.auth',
+                'django.contrib.messages.context_processors.messages',
+            ],
+        },
+    },
+]
+
+
+
+WSGI_APPLICATION = 'semilla360.wsgi.application'
+
+DATABASE_ROUTERS = ['semilla360.routers.DatabaseRouter']
+
+# Database
+# https://docs.djangoproject.com/en/5.1/ref/settings/#databases
+
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.mysql',
+        'NAME': 'semilla360',
+        'USER': 'root',
+        'PASSWORD': '123456',
+        'HOST': 'localhost',  # o la dirección de tu servidor MySQL
+        'PORT': '3306',  # puerto por defecto de MySQL
+    },
+    'bd_semilla_starsoft': {
+        'ENGINE': 'mssql',
+        'NAME': '003BDCOMUN',  # una de las bases de datos de SQL Server
+        'USER': 'SOPORTE',
+        'PASSWORD': 'SOPORTE',
+        'HOST': '192.168.0.201',       # IP de tu servidor SQL en red local
+        'PORT': '1433',                # puerto SQL Server predeterminado
+        'OPTIONS': {
+            'driver': 'ODBC Driver 17 for SQL Server',  # especifica el driver adecuado
+        },
+    },
+    'bd_maxi_starsoft': {
+        'ENGINE': 'mssql',
+        'NAME': '007BDCOMUN',  # una de las bases de datos de SQL Server
+        'USER': 'SOPORTE',
+        'PASSWORD': 'SOPORTE',
+        'HOST': '192.168.0.201',       # IP de tu servidor SQL en red local
+        'PORT': '1433',                # puerto SQL Server predeterminado
+        'OPTIONS': {
+            'driver': 'ODBC Driver 17 for SQL Server',  # especifica el driver adecuado
+        },
+    },
+    'bd_trading_starsoft': {
+        'ENGINE': 'mssql',
+        'NAME': '008BDCOMUN',  # una de las bases de datos de SQL Server
+        'USER': 'SOPORTE',
+        'PASSWORD': 'SOPORTE',
+        'HOST': '192.168.0.201',       # IP de tu servidor SQL en red local
+        'PORT': '1433',                # puerto SQL Server predeterminado
+        'OPTIONS': {
+            'driver': 'ODBC Driver 17 for SQL Server',  # especifica el driver adecuado            '
+        },
+    },
+}
+
+
+
+# Password validation
+# https://docs.djangoproject.com/en/5.1/ref/settings/#auth-password-validators
+
+AUTH_PASSWORD_VALIDATORS = [
+    {
+        'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator',
+    },
+    {
+        'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator',
+    },
+    {
+        'NAME': 'django.contrib.auth.password_validation.CommonPasswordValidator',
+    },
+    {
+        'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',
+    },
+]
+
+LANGUAGE_CODE = 'es-pe'
+
+TIME_ZONE = 'America/Lima'
+
+USE_I18N = True
+
+USE_TZ = True
+
+STATIC_URL = 'static/'
+
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+#AUTH_USER_MODEL = 'usuarios.User'
+ROLEPERMISSIONS_MODULE = 'usuarios.roles'
+
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': (
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ),
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated',
+    ],
+}
+
+# Agrega la configuración de GraphQL
+GRAPHENE = {
+    "SCHEMA": "importaciones.schema.schema"  # Asegúrate de que apunte a tu archivo `schema.py`
+}
+
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000", "http://10.168.0.5:3000"# Origen donde se ejecuta tu frontend React
+]
+
+# Si tu backend necesita manejar credenciales (por ejemplo, autenticación con JWT)
+CORS_ALLOW_CREDENTIALS = True
+
+CORS_ALLOW_CREDENTIALS = True
+
+# Permitir headers adicionales si es necesario (como Authorization para JWT)
+CORS_ALLOW_HEADERS = [
+    'content-type',
+    'authorization',  # Para permitir encabezados de autorización
+]
+
+# Configuración de CSRF
+CSRF_TRUSTED_ORIGINS = [
+    'http://localhost:3000',
+]
+
+APPEND_SLASH = True
+
+MEDIA_URL = "/media/"
+MEDIA_ROOT = os.path.join(BASE_DIR, "media")
+
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = 'sistemas.grupolasemilla@gmail.com'  # Tu correo
+#EMAIL_HOST_PASSWORD = 'SIST-L2023*'
+EMAIL_HOST_PASSWORD = 'vjnatfacdzsseohb'
+DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
+FRONTEND_URL = "http://localhost:3000"
+
+
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=15),  # Tiempo de validez del token de acceso
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),      # Tiempo de validez del token de refresco
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
+    'ALGORITHM': 'HS256',
+    'SIGNING_KEY': SECRET_KEY,
+    'VERIFYING_KEY': None,
+    'AUTH_HEADER_TYPES': ('Bearer',),
+    'USER_ID_FIELD': 'id',
+    'USER_ID_CLAIM': 'user_id',
+    'AUTH_TOKEN_CLASSES': ('rest_framework_simplejwt.tokens.AccessToken',),
+    'TOKEN_TYPE_CLAIMS': 'type',
+}
+

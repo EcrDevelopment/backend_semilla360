@@ -1,0 +1,482 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Title</title>
+</head>
+<body>
+
+
+
+</body>
+</html><!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Reporte</title>
+    <style>
+
+        th, td {
+            border: 1px solid black;
+            line-height: 10px; /* Igualar el line-height a la altura */
+            text-align: justify;
+            padding: 1px;
+        }
+        .tabla_principal > td {
+            height: 10px;
+            line-height: 50px; /* Igualar el line-height a la altura */
+             text-align: center;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        li{
+        line-height: 1;
+        }
+        @page {
+            size: A4 landscape;
+            margin: 7mm;
+        }
+    </style>
+</head>
+<body>
+    <h2>{{ data.procesado.empresa }}</h2>
+    <h2 style="text-align:center;background-color:#ddf542;">{{ data.dataForm.producto }}</h2>
+    <h2>Carta Porte: {{ data.dataForm.cartaPorte }}</h2>
+    <table style="width: 100%;border:none" class="tabla_principal">
+        <tbody>
+            <tr >
+                <td style="border:none;padding: 2px">
+                    N° DUA: {{data.dataForm.dua}}
+                </td>
+                <td style="border:none;padding: 2px">
+                    Fec. Num.: {{data.procesado.fecha_numeracion}}
+                </td >
+                <td style="border:none;padding: 2px">
+                    Factura N°: {{data.dataForm.numFactura}}
+                </td>
+                <td style="border:none;padding: 2px">
+                    O/C : {{data.dataForm.oc }}{{"("}}{{data.dataForm.numRecojo}}{{")"}}
+                </td>
+                <td style="border:none;padding: 2px">
+                     Cant.: {{data.procesado.total_sacos_cargados}} sacos
+                </td>
+                <td style="border:none;padding: 2px">
+                    {{data.dataForm.pesoNetoCrt}} Kg.
+                </td>
+            </tr>
+        </tbody>
+    </table>
+    <br>
+
+    <table style="width: 80%;
+            border-collapse: collapse;">
+        <thead>
+            <tr>
+                <th>
+                    FEC. INGRE.
+                </th>
+                <th colspan="2">
+                    EMPRESA DE TRANSP.
+                </th>
+                <th colspan="4">
+                    CARGA
+                </th>
+                <th colspan="4">
+                    DESCARGA
+                </th>
+                <th colspan="4">
+                    DESCUENTOS
+                </th>
+            </tr>
+            <tr>
+                <th rowspan="{{ data.procesado.len_tabla_two_more }}">{{data.procesado.fecha_numeracion}}</th>
+                <th colspan="2" rowspan="{{ data.procesado.len_tabla_one_more }}">{{data.dataForm.transportista}}</th>
+                <th>N°</th>
+                <th>Placa S.</th>
+                <th>Sacos C.</th>
+                <th>Peso S.</th>
+                <th>Placa L.</th>
+                <th>Sacos D.</th>
+                <th>Peso L.</th>
+                <th>Merma</th>
+                <th>S. Falt.</th>
+                <th>S. Rotos</th>
+                <th>S. Humed.</th>
+                <th>S. Mojad.</th>
+            </tr>
+
+        </thead>
+        <tbody>
+            {% for row in data.dataTable %}
+            <tr>
+
+                <td>{{ loop.index }}</td>
+                <td>{{ row.placa }}</td>
+                <td>{{ row.sacosCargados }}</td>
+                <td>{{ row.pesoSalida }}</td>
+                <td>{{ row.placaLlegada }}</td>
+                <td>{{ row.sacosDescargados }}</td>
+                <td>{{ row.pesoLlegada }}</td>
+                <td>{{ row.merma }}</td>
+                 <td>{{ row.sacosFaltantes}}</td>
+                 <td>{{ row.sacosRotos}}</td>
+                 <td>{{ row.sacosHumedos }}</td>
+                 <td>{{ row.sacosMojados }}</td>
+            </tr>
+            {% endfor %}
+        <tr>
+            <td>
+                Flete x TM
+            </td>
+            <td>
+                $ {{data.dataForm.fletePactado}}
+            </td>
+            <td>
+                {{data.procesado.len_tabla}}
+            </td>
+            <td>
+                TOTAL
+            </td>
+            <td>
+                {{data.procesado.total_sacos_cargados}}
+            </td>
+            <td>
+                {{data.procesado.suma_peso_salida}}
+            </td>
+            <td>
+                TOTAL
+            </td>
+            <td>
+                {{data.procesado.total_sacos_descargados}}
+            </td>
+            <td>
+                {{data.procesado.suma_peso_llegada}}
+            </td>
+            <td>
+                {{data.procesado.merma_total}}
+            </td>
+            <td>
+                {{data.procesado.total_sacos_faltantes}}
+            </td>
+            <td>
+                {{data.procesado.total_sacos_rotos}}
+            </td>
+            <td>
+                {{data.procesado.total_sacos_humedos}}
+            </td>
+            <td>
+                {{data.procesado.total_sacos_mojados}}
+            </td>
+        </tr>
+        </tbody>
+    </table>
+
+<br>
+
+
+    <table style="border:none;">
+        <tr style="border:none;">
+            <td style="border:none;" colspan="3">
+                <div >
+                    <table>
+                        <tbody>
+                            <tr style="width:30%">
+                                <td>
+                                    Faltante peso Sta. Cruz - Desaguadero
+                                </td>
+                                <td style="text-align:right;">
+                                    {{data.procesado.diferencia_de_peso|round(2)}} Kg.
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>
+                                    Merma permitida
+                                </td>
+                                <td style="text-align:right;">
+                                    {{data.dataExtra.mermaPermitida|round(2)}} Kg.
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>
+                                    Desc. diferencia de peso
+                                </td>
+                                <td style="text-align:right;">
+                                    {{data.procesado.diferencia_peso_por_cobrar|round(2)}} Kg.
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>
+                                    Desc. sacos falantes
+                                </td>
+                                <td style="text-align:right;">
+                                    {{data.procesado.descuento_peso_sacos_faltantes}} Kg.
+                                </td>
+                            </tr>
+
+                        </tbody>
+                    </table>
+                    <ul style="list-style-type: none;padding:0;margin:0; margin-top:5px; justify-content: space-between;text-align: none;">
+                        <li><strong>Dsctos.</strong></li>
+
+                        {% if data.procesado.descuento_por_diferencia_peso > 0 %}
+                        <li style="background-color:#ddf542;">
+                            B/V 004- &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: dscto. x dif. peso
+                            <span style="width:100%;float:right;">$ {{ data.procesado.descuento_por_diferencia_peso| round(2) }}</span>
+                        </li>
+                        {% endif %}
+
+                        {% if data.procesado.descuento_sacos_faltantes > 0 %}
+                        <li style="background-color:#ddf542;">
+                            B/V 004- &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: dscto. x sacos falt.
+                            <span style="width:100%;float:right;">$ {{data.procesado.descuento_sacos_faltantes}}</span>
+                        </li>
+                        {% endif %}
+
+                        {% if data.procesado.descuento_sacos_rotos > 0 %}
+                        <li style="background-color:#ddf542;">
+                            B/V 004- &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: dscto. x sacos rots.
+                            <span style="width:100%;float:right;">$ {{data.procesado.descuento_sacos_rotos}}</span>
+                        </li>
+                        {% endif %}
+
+                        {% if data.procesado.descuento_sacos_humedos > 0 %}
+                        <li style="background-color:#ddf542;">
+                            B/V 004- &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: dscto. x sacos Hum.
+                            <span style="width:100%;float:right;">$ {{data.procesado.descuento_sacos_humedos}}</span>
+                        </li>
+                        {% endif %}
+
+                        {% if data.procesado.descuento_sacos_mojados > 0 %}
+                        <li style="background-color:#ddf542;">
+                            B/V 004- &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: dscto. x sacos Moj.
+                            <span style="width:100%;float:right;">$ {{data.procesado.descuento_sacos_mojados}}</span>
+                        </li>
+                        {% endif %}
+
+                        {% if data.procesado.total_descuento_estiba > 0 %}
+                        <li style="background-color:#ddf542;">
+                            B/V 004- &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: dscto. x estibaje
+                            <span style="width:100%;float:right;">$ {{data.procesado.total_descuento_estiba| round(2)}}</span>
+                        </li>
+                        {% endif %}
+                        <li>
+                            TOTAL:    $ {{data.procesado.total_dsct}}
+                        </li>
+
+                    </ul>
+                </div>
+            </td>
+
+            <td style="border:none;">
+
+            </td>
+            <td style="border:none;">
+
+            </td>
+
+            <td style="border:none;" colspan="3">
+                <table>
+                    <tr>
+                        <td >
+                            FLETE
+                        </td>
+                        <td style="text-align:right;">
+                            $ {{data.procesado.flete_base}}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td  style="font-size: 7px; text-align:left;">
+                            Dscto. por dif. de peso
+                        </td>
+                        <td style="text-align:right;">
+                            $ {{ data.procesado.descuento_por_diferencia_peso| round(2) }}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="font-size: 7px; text-align:left;">
+                            Dscto. por sacos faltantes
+                        </td>
+                        <td style="text-align:right;">
+                            $ {{data.procesado.descuento_sacos_faltantes}}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="font-size: 7px; text-align:left;">
+                            Dscto. por sacos rotos
+                        </td>
+                        <td style="text-align:right;">
+                            $ {{data.procesado.descuento_sacos_rotos}}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="font-size: 7px; text-align:left;">
+                            Dscto. por sacos humedos
+                        </td>
+                        <td style="text-align:right;">
+                            $ {{data.procesado.descuento_sacos_humedos}}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="font-size: 7px; text-align:left;">
+                            Dscto. por sacos mojados
+                        </td>
+                        <td style="text-align:right;">
+                            $ {{data.procesado.descuento_sacos_mojados}}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>
+                            FLETE TOTAL
+                        </td>
+                        <td style="text-align:right;">
+                            $ {{data.procesado.total_luego_dsctos_sacos}}
+                        </td>
+                    </tr>
+                </table>
+                <ul style="list-style-type: none;padding:0;margin:0; margin-top:5px; justify-content: space-between;text-align: none;">
+                        {% for item in data.procesado.pago_estiba_list %}
+                        <li style="">
+                            {{ item.placa }}{{" "}}{{item.detalle}}
+                            <span style="width:100%;float:right;">$ {{item.monto_descuento}}</span>
+                        </li>
+                        {% endfor %}
+                </ul>
+                <br>
+                <table>
+                    <tr style="background-color:#f2ad35;">
+                        <td>
+                            Neto a pagar
+                        </td>
+                        <td style="text-align:right;">
+                            $ {{data.procesado.total_a_pagar}}
+                        </td>
+                    </tr>
+                </table>
+            </td>
+            <td style="border:none;">
+
+            </td>
+            <td style="border:none;">
+
+            </td>
+            <td style="border:none;" colspan="2">
+                <h3 style="margin-bottom:1px; padding:none;">RESUMEN</h3>
+                <table>
+                    <tr>
+                        <td>
+                            FLETE
+                        </td>
+                        <td style="text-align:right;">
+                            $ {{data.procesado.flete_base}}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="font-size: 7px; text-align:left;">
+                            Dscto.
+                        </td>
+                        <td style="text-align:right;">
+                            $ {{data.procesado.total_dsct}}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="font-size: 7px; text-align:left;">
+                            Neto
+                        </td>
+                        <td style="text-align:right;">
+                            $ {{data.procesado.total_a_pagar}}
+                        </td>
+                    </tr>
+                </table>
+            </td>
+            <td style="border:none;">
+
+            </td>
+            <td style="border:none;">
+
+            </td>
+            <td style="border:none;" colspan="2">
+                <p style="margin-bottom:1px; padding:none;">Determinacion costo por Kg.</p>
+                <table>
+                    <tr>
+                        <td>
+                            C.P.
+                        </td>
+                        <td style="text-align:right;">
+                            {{data.procesado.precio_por_tonelada}}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>
+                            F.B.
+                        </td>
+                        <td style="text-align:right;">
+                            {{data.dataForm.fletePactado | round(2)}}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>
+                            G.N.
+                        </td>
+                        <td style="text-align:right;">
+                            {{data.dataExtra.gastosNacionalizacion | round(2)}}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>
+                            MF CIA
+                        </td>
+                        <td style="text-align:right;">
+                            {{data.dataExtra.margenFinanciero | round(2)}}
+                        </td>
+                    </tr>
+                     <tr>
+                        <td>
+                            IGV 18%
+                        </td>
+                        <td style="text-align:right;">
+                            {{data.procesado.igv}}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <strong>PRECIO DES</strong>
+                        </td>
+                        <td style="text-align:right;">
+                            {{data.procesado.precio_bruto_final}}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <strong>COSTO TM</strong>
+                        </td>
+                        <td style="text-align:right;">
+                            {{data.procesado.precio_por_tonelada_final}}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>
+                            Costo kg.
+                        </td>
+                        <td style="text-align:right;">
+                            {{data.procesado.precio_por_kg_final}}
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+
+    </table>
+
+<br>
+<table>
+    <tr>
+      <td>jelou mai ol frens</td>
+    </tr>
+</table>
+
+
+
+</body>
+</html>
