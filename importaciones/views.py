@@ -3,41 +3,51 @@ import math
 import io
 import tempfile
 import zipfile
+from collections import defaultdict, OrderedDict
 from datetime import datetime
 import traceback
+from pathlib import Path
+
+import fitz
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
 from django.db import connections,IntegrityError,transaction
-from django.db.models import Q
+from django.db.models import Q, Count, Min
+from django.utils.encoding import smart_str
 from django.utils.timezone import make_aware
+from pypdf import PdfReader, PdfWriter, PdfMerger
+
 from reportlab.lib.styles import getSampleStyleSheet
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
-from rest_framework import generics, status
+from reportlab.lib.units import cm
+from rest_framework import generics, status, permissions, viewsets
 from rest_framework.permissions import IsAuthenticated
 
 
 from .models import (OrdenCompraStarsoft, GastosExtra, Proveedor, OrdenCompraDespacho, Empresa, OrdenCompra, Producto,
                      ProveedorTransporte, Transportista,
-                     Despacho, DetalleDespacho, ConfiguracionDespacho, Declaracion, Documento)
+                     Despacho, DetalleDespacho, ConfiguracionDespacho, Declaracion, Documento, ExpedienteDeclaracion,
+                     TipoDocumento)
 from .forms import BaseDatosForm
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse, HttpResponse, Http404, FileResponse
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes
 import pandas as pd
 import pytesseract
 from PIL import Image
 import pdfplumber
 import json
 from django.shortcuts import get_object_or_404
-
-from .serializers import DespachoSerializer, DeclaracionConDocumentosSerializer, DocumentoSerializer
+from .serializers import DespachoSerializer, DeclaracionConDocumentosSerializer, DocumentoSerializer, \
+    DocumentoListadoSerializer, AsignarPaginasSerializer, ExpedienteDeclaracionListadoSerializer, \
+    DocumentoExpedienteSerializer, ExpedienteDeclaracionFolioSerializer, TipoDocumentoSerializer
 from .utils import renderizar_template, convertir_html_a_pdf, procesar_data_reporte, procesar_data_bd_reporte, \
     calcular_monto_descuento_estiba, calcular_peso_no_considerado_por_sacos_faltante, \
     calcular_diferencia_de_peso_por_cobrar_kg, calcular_costo_por_kg, calcular_descuento_sacos, \
     calcular_descuento_solo_sacos, calcular_monto_luego_dsctos_sacos,calcular_hash_archivo
 import os
-from reportlab.lib.pagesizes import landscape, A4
+from reportlab.lib.pagesizes import landscape, A4, letter
 from reportlab.lib import colors
 from reportlab.pdfgen import canvas
 from reportlab.platypus import Table, TableStyle, Paragraph
@@ -48,6 +58,8 @@ from django.conf import settings
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from django.contrib.contenttypes.models import ContentType
+import mimetypes
 
 
 
@@ -131,7 +143,6 @@ def extract_pdf_tables(file):
             # Convertir el DataFrame a una lista de diccionarios
             return df_text_table.to_dict(orient='records')
 
-# Función para extraer datos de un archivo Excel
 def extract_excel_data(file):
     try:
         df = pd.read_excel(file, sheet_name=None)
@@ -142,7 +153,6 @@ def extract_excel_data(file):
     except Exception as e:
         return {"error": str(e)}
 
-# Función para extraer texto de una imagen usando Tesseract
 def extract_image_text(file):
     img = Image.open(file)
     text = pytesseract.image_to_string(img)
@@ -204,7 +214,6 @@ def upload_file_excel(request):
     except Exception as e:
         return JsonResponse({"status":"error","error": f"Error al procesar archivo: {str(e)}"}, status=400)
 
-# Vista para subir y procesar archivo
 @api_view(['POST'])
 def upload_file(request):
     if 'file' in request.FILES:
@@ -2807,10 +2816,8 @@ class GuardarArchivoView(APIView):
 
         return Response({'mensaje': 'Archivos guardados correctamente'})
 
-
-
-
 class CargaDirectaView(APIView):
+    permission_classes = [IsAuthenticated]
     parser_classes = (MultiPartParser, FormParser)
 
     def post(self, request):
@@ -2824,7 +2831,15 @@ class CargaDirectaView(APIView):
         if not archivos:
             return Response({"error": "No se proporcionaron archivos"}, status=400)
 
-        declaracion, _ = Declaracion.objects.get_or_create(numero=numero, anio=anio)
+        # 🔧 Normalizar número antes de buscar
+        numero_normalizado = numero.lstrip("0")
+
+        try:
+            declaracion, _ = Declaracion.objects.get_or_create(numero=numero_normalizado, anio=anio)
+        except IntegrityError:
+            # Si ocurre una condición de carrera, intenta obtenerlo directamente
+            declaracion = Declaracion.objects.get(numero=numero_normalizado, anio=anio)
+
         repetidos = []
 
         for archivo in archivos:
@@ -2832,19 +2847,21 @@ class CargaDirectaView(APIView):
 
             documento_existente = Documento.objects.filter(hash_archivo=hash_archivo).first()
             if documento_existente:
-                declaracion_existente = documento_existente.declaracion
+                declaracion_existente = documento_existente.content_object
                 repetidos.append({
                     "archivo": archivo.name,
-                    "registrado_en": f"{declaracion_existente.numero}-{declaracion_existente.anio}"
+                    "registrado_en": f"{declaracion_existente.numero}-{declaracion_existente.anio}" if isinstance(declaracion_existente, Declaracion) else "Desconocido"
                 })
                 continue
 
-            Documento.objects.create(
-                declaracion=declaracion,
-                archivo=archivo,
+            documento = Documento(
+                content_object=declaracion,
                 nombre_original=archivo.name,
-                hash_archivo=hash_archivo
+                hash_archivo=hash_archivo,
+                usuario=request.user
             )
+            documento.archivo.save(archivo.name, archivo)
+            documento.save()
 
         if repetidos:
             return Response({
@@ -2852,7 +2869,6 @@ class CargaDirectaView(APIView):
                 "archivos_omitidos": repetidos
             })
         return Response({"mensaje": "Archivos cargados correctamente"})
-
 
 class ProcesarArchivoComprimidoView(APIView):
     parser_classes = (MultiPartParser, FormParser)
@@ -2889,11 +2905,8 @@ class ProcesarArchivoComprimidoView(APIView):
             return Response({"error": str(e)}, status=500)
 
 class AsignarDeclaracionDesdeComprimidoView(APIView):
-    """
-    Recibe:
-    - archivo_temp: nombre del archivo subido
-    - asignaciones: lista de dicts { carpeta: "xxx", numero_dua: "1234", anio: 2025 }
-    """
+    permission_classes = [IsAuthenticated]
+
     def post(self, request):
         archivo_temp = request.data.get("archivo_temp")
         asignaciones = request.data.get("asignaciones", [])
@@ -2906,7 +2919,6 @@ class AsignarDeclaracionDesdeComprimidoView(APIView):
         if not os.path.exists(temp_path):
             return Response({"error": "Archivo temporal no encontrado"}, status=404)
 
-        # Abrimos el archivo comprimido
         try:
             if zipfile.is_zipfile(temp_path):
                 archivo_comp = zipfile.ZipFile(temp_path)
@@ -2934,19 +2946,17 @@ class AsignarDeclaracionDesdeComprimidoView(APIView):
                     contenido = archivo_comp.read(file_name)
                     nombre_simple = os.path.basename(file_name)
 
-                    # Calcular hash del contenido del archivo
                     hash_archivo = hashlib.sha256(contenido).hexdigest()
                     existente = Documento.objects.filter(hash_archivo=hash_archivo).first()
 
                     if existente:
-                        declaracion_existente = existente.declaracion
+                        declaracion_existente = existente.content_object  # Cambiado a content_object
                         repetidos.append({
                             "archivo": nombre_simple,
-                            "registrado_en": f"{declaracion_existente.numero}-{declaracion_existente.anio}"
+                            "registrado_en": f"{declaracion_existente.numero}-{declaracion_existente.anio}" if isinstance(declaracion_existente, Declaracion) else "Desconocido"
                         })
                         continue
 
-                    # Guardar el archivo en la carpeta <numero>-<anio>
                     carpeta_destino = os.path.join(settings.MEDIA_ROOT, "documentos", f"{numero}-{anio}")
                     os.makedirs(carpeta_destino, exist_ok=True)
                     ruta_destino = os.path.join(carpeta_destino, nombre_simple)
@@ -2954,12 +2964,17 @@ class AsignarDeclaracionDesdeComprimidoView(APIView):
                     with open(ruta_destino, "wb") as f:
                         f.write(contenido)
 
-                    Documento.objects.create(
-                        declaracion=declaracion,
-                        archivo=os.path.join("documentos", f"{numero}-{anio}", nombre_simple),
+                    file_content = ContentFile(contenido)
+
+                    documento = Documento(
+                        content_object=declaracion,
                         nombre_original=nombre_simple,
-                        hash_archivo=hash_archivo
+                        hash_archivo=hash_archivo,
+                        usuario=request.user
                     )
+                    # Esto activa la lógica de `upload_to=ruta_documento`
+                    documento.archivo.save(nombre_simple, file_content)
+                    documento.save()
 
         archivo_comp.close()
         os.remove(temp_path)
@@ -2971,9 +2986,6 @@ class AsignarDeclaracionDesdeComprimidoView(APIView):
             })
 
         return Response({"mensaje": "Archivos extraídos y asignados correctamente"})
-
-
-# views.py
 
 class ListarDeclaracionesView(APIView):
     def get(self, request):
@@ -2992,7 +3004,15 @@ class DescargarZipView(APIView):
             raise Http404("Declaración no encontrada")
 
         carpeta = f"{numero}-{anio}"
-        documentos = Documento.objects.filter(declaracion=declaracion)
+
+        # Obtener el content_type para el modelo Declaracion
+        content_type = ContentType.objects.get_for_model(Declaracion)
+
+        # Filtrar documentos usando la relación genérica
+        documentos = Documento.objects.filter(
+            content_type=content_type,
+            object_id=declaracion.id
+        )
 
         # Usar un buffer en memoria
         buffer = io.BytesIO()
@@ -3004,11 +3024,10 @@ class DescargarZipView(APIView):
                     nombre = os.path.basename(doc.archivo.name)
                     file_path = os.path.join(settings.MEDIA_ROOT, doc.archivo.name)
 
-                    # Asegurarse de que el archivo se lea correctamente desde su ruta
                     with open(file_path, "rb") as f:
                         zip_file.writestr(nombre, f.read())
 
-        buffer.seek(0)  # Resetear el puntero del buffer al inicio
+        buffer.seek(0)
 
         # Devolver el archivo ZIP como respuesta
         response = FileResponse(buffer, as_attachment=True, filename=f"{carpeta}.zip")
@@ -3027,16 +3046,645 @@ class EliminarDocumentoView(APIView):
 class DocumentosPorDeclaracionView(APIView):
     def get(self, request, numero, anio):
         declaracion = get_object_or_404(Declaracion, numero=numero, anio=anio)
-        documentos = Documento.objects.filter(declaracion=declaracion)
+
+        # Obtener ContentType para el modelo Declaracion
+        content_type = ContentType.objects.get_for_model(Declaracion)
+
+        # Filtrar documentos relacionados a esa declaración
+        documentos = Documento.objects.filter(
+            content_type=content_type,
+            object_id=declaracion.id
+        )
+
         serializer = DocumentoSerializer(documentos, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
+
+class DocumentosPorDeclaracionUsuarioLogeadoView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, numero, anio):
+        # 1. Obtener la declaración específica
+        declaracion = get_object_or_404(Declaracion, numero=numero, anio=anio)
+
+        # 2. Obtener ContentType del modelo Declaracion
+        content_type = ContentType.objects.get_for_model(Declaracion)
+
+        # 3. Filtrar los documentos relacionados a esa declaración y al usuario logeado
+        documentos = Documento.objects.filter(
+            content_type=content_type,
+            object_id=declaracion.id,
+            usuario=request.user
+        )
+
+        # 4. Serializar y devolver
+        serializer = DocumentoSerializer(documentos, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
 
 class DescargarDocumentoView(APIView):
     def get(self, request, documento_id):
         documento = get_object_or_404(Documento, id=documento_id)
         file_path = documento.archivo.path
-        file_name = os.path.basename(file_path)
-        return FileResponse(open(file_path, 'rb'), as_attachment=True, filename=file_name)
+        file_name = documento.nombre_original or os.path.basename(file_path)
+
+        mime_type, _ = mimetypes.guess_type(file_path)
+        mime_type = mime_type or 'application/octet-stream'
+
+        response = FileResponse(open(file_path, 'rb'), content_type=mime_type)
+        response['Content-Disposition'] = f'attachment; filename="{smart_str(file_name)}"'
+        return response
+
+class ListarDeclaracionesDelUsuarioView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        numero = request.query_params.get('numero')
+
+        # Filtra las declaraciones que tengan al menos un documento subido por el usuario autenticado
+        queryset = Declaracion.objects.filter(
+            documentos__usuario=request.user
+        ).prefetch_related('documentos').distinct()
+
+        # Filtro adicional por número si se proporciona
+        if numero:
+            queryset = queryset.filter(numero__icontains=numero)
+
+        # Serializa y responde
+        data = DeclaracionConDocumentosSerializer(queryset, many=True).data
+        return Response(data)
+
+class DocumentoVisualizarView(APIView):
+    permission_classes = [IsAuthenticated] # Requiere que el usuario esté autenticado
+
+    def get(self, request, pk, *args, **kwargs):
+        """
+        Permite a un usuario autenticado visualizar un documento específico.
+        Se verifica que el documento exista y que el usuario tenga permisos
+        para acceder a él.
+        """
+        try:
+            documento = get_object_or_404(Documento, pk=pk)
+        except Http404:
+            return Response(
+                {"detail": "Documento no encontrado."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # --- Lógica de Autorización (MUY IMPORTANTE) ---
+        grupos_permitidos = ['importaciones_admin', 'importaciones_asis', 'proveedor']
+
+        # 2. El usuario pertenece a un grupo específico (ej. "Administradores", "Gestores"):
+        if not request.user.groups.filter(name__in=grupos_permitidos).exists():
+            return Response({"detail": "No tienes permiso para visualizar este documento."},status=status.HTTP_403_FORBIDDEN)
+        # 3. El usuario tiene un permiso específico (ej. 'tu_app_documentos.view_documento'):
+        # if not request.user.has_perm('tu_app_documentos.view_documento', documento):
+        #    return Response(
+        #        {"detail": "No tienes permiso para visualizar este documento."},
+        #        status=status.HTTP_403_FORBIDDEN
+        #    )
+        # 4. El documento está asociado a una Declaracion y el usuario tiene acceso a esa Declaracion:
+        # if not request.user == documento.declaracion.usuario_propietario: # Asumiendo un campo 'usuario_propietario' en Declaracion
+        #     return Response(
+        #         {"detail": "No tienes permiso para visualizar documentos de esta declaración."},
+        #         status=status.HTTP_403_FORBIDDEN
+        #     )
+
+        # Usaremos el ejemplo 1, que es el más directo con tu modelo actual,
+        # asumiendo que 'usuario' en Documento es el que lo subió y tiene derecho a verlo.
+        # Ajusta esta lógica según tus reglas de negocio.
+        # -----------------------------------------------
+
+        # Asegúrate de que el archivo exista en el sistema de archivos
+        file_path = documento.archivo.path
+        if not os.path.exists(file_path):
+            return Response(
+                {"detail": "El archivo no existe en el servidor."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Verifica que el archivo sea un PDF
+        if not documento.nombre_original.lower().endswith('.pdf'):
+            return Response(
+                {"detail": "Solo se pueden visualizar archivos PDF."},
+                status=status.HTTP_400_BAD_REQUEST # O 403, dependiendo de la política
+            )
+
+        # Abre el archivo y lo sirve como respuesta
+        try:
+            # Abre el archivo en modo binario
+            # Usar 'inline' en Content-Disposition para que el navegador intente visualizarlo
+            # Usar 'application/pdf' como Content-Type
+            return FileResponse(
+                open(file_path, 'rb'),
+                content_type='application/pdf',
+                as_attachment=False, # Esto es clave para 'inline' visualization
+                filename=documento.nombre_original # Opcional, nombre sugerido para guardar
+            )
+        except Exception as e:
+            return Response(
+                {"detail": f"Error al servir el archivo: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+class EditarPDFView(APIView):
+    def post(self, request, pk):
+        try:
+            documento = Documento.objects.select_related('declaracion').get(pk=pk)
+        except Documento.DoesNotExist:
+            return Response({'error': 'Documento no encontrado'}, status=404)
+
+        paginas_a_eliminar = request.data.get("paginas_a_eliminar", [])
+        if not isinstance(paginas_a_eliminar, list):
+            return Response({'error': 'Formato inválido de páginas'}, status=400)
+
+        original_path = documento.archivo.path
+        doc = fitz.open(original_path)
+
+        if len(paginas_a_eliminar) >= doc.page_count:
+            return Response({'error': 'No se puede eliminar todas las páginas'}, status=400)
+
+        # Eliminar las páginas seleccionadas
+        for pagina in sorted(set(paginas_a_eliminar), reverse=True):
+            if 1 <= pagina <= len(doc):
+                doc.delete_page(pagina - 1)
+
+        # Generar nuevo nombre y ruta del archivo
+        base_nombre, _ = os.path.splitext(documento.nombre_original)
+        nuevo_nombre = f"{base_nombre}_editado.pdf"
+        carpeta = f"{documento.declaracion.numero}-{documento.declaracion.anio}"
+        nuevo_rel_path = os.path.join("documentos", carpeta, nuevo_nombre)
+        nuevo_path = os.path.join(settings.MEDIA_ROOT, nuevo_rel_path)
+
+        os.makedirs(os.path.dirname(nuevo_path), exist_ok=True)
+        doc.save(nuevo_path)
+
+        # Crear nuevo Documento
+        nuevo_documento = Documento.objects.create(
+            declaracion=documento.declaracion,
+            archivo=nuevo_rel_path,
+            nombre_original=nuevo_nombre,
+            usuario=request.user if request.user.is_authenticated else None
+        )
+
+        # Crear registro en ExpedienteDeclaracion
+        expediente = ExpedienteDeclaracion.objects.create(
+            declaracion=documento.declaracion,
+            documento=nuevo_documento,
+            descripcion=f"Versión editada del documento ID {documento.id}. Páginas eliminadas: {paginas_a_eliminar}",
+            tipo='edicion',
+            usuario=request.user if request.user.is_authenticated else None
+        )
+
+        return Response({
+            'mensaje': 'PDF editado con éxito',
+            'nuevo_documento_id': nuevo_documento.id,
+            'expediente_id': expediente.id,
+            'nombre': nuevo_documento.nombre_original
+        }, status=201)
+
+@api_view(['GET'])
+def obtener_pdf(request, pk):
+    documento = get_object_or_404(Documento, pk=pk)
+    return FileResponse(documento.archivo, content_type='application/pdf')
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def pdf_list_from_server(request, documento_id):
+    try:
+        documento_actual = Documento.objects.get(id=documento_id)
+    except Documento.DoesNotExist:
+        return Response({"error": "Documento no encontrado"}, status=status.HTTP_404_NOT_FOUND)
+
+    declaracion = documento_actual.declaracion
+
+    documentos = Documento.objects.filter(declaracion=declaracion).exclude(id=documento_id)
+
+    serializer = DocumentoListadoSerializer(documentos, many=True)
+    return Response(serializer.data)
+
+class DocumentosRelacionadosAPIView(APIView):
+    def get(self, request, documento_id):
+        try:
+            # Obtiene el documento pasado por id
+            documento = Documento.objects.get(id=documento_id)
+        except Documento.DoesNotExist:
+            return Response({"detail": "Documento no encontrado"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Obtiene todos los documentos que tengan la misma declaracion
+        documentos_relacionados = Documento.objects.filter(
+            declaracion=documento.declaracion
+        ).exclude(id=documento_id)
+
+        serializer = DocumentoSerializer(documentos_relacionados, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+class CombinarPDFsDeclaracionView(APIView):
+    def post(self, request, numero, anio):
+        declaracion = get_object_or_404(Declaracion, numero=numero, anio=anio)
+        documentos = Documento.objects.filter(declaracion=declaracion, nombre_original__iendswith=".pdf")
+
+        if not documentos.exists():
+            return Response({"error": "No hay documentos PDF para combinar"}, status=400)
+
+        merger = PdfMerger()
+        for doc in documentos:
+            path = doc.archivo.path
+            if os.path.exists(path):
+                merger.append(path)
+
+        # Guardar el PDF combinado en memoria
+        output = io.BytesIO()
+        merger.write(output)
+        merger.close()
+        output.seek(0)
+
+        return FileResponse(
+            output,
+            as_attachment=True,
+            content_type="application/pdf",
+            filename=f"{numero}-{anio}_combinado.pdf"
+        )
+
+class AgregarDocumentosExistentesAPIView(APIView):
+    def post(self, request, expediente_id):
+        documento_ids = request.data.get("documento_ids", [])
+        expediente = ExpedienteDeclaracion.objects.get(id=expediente_id)
+        merger = PdfMerger()
+
+        for doc_id in documento_ids:
+            doc = Documento.objects.get(id=doc_id)
+            merger.append(doc.archivo.file)
+
+        output = io.BytesIO()
+        merger.write(output)
+        merger.close()
+
+        expediente.archivo_pdf.save(f"expediente_{expediente.id}_modificado.pdf", ContentFile(output.getvalue()))
+        expediente.save()
+
+        return Response({"detail": "Documentos agregados al expediente."}, status=status.HTTP_200_OK)
+
+class ReordenarPaginasAPIView(APIView):
+    def post(self, request, expediente_id):
+        nuevo_orden = request.data.get("nuevo_orden", [])  # Ej: [2, 0, 1] (índices desde 0)
+        expediente = ExpedienteDeclaracion.objects.get(id=expediente_id)
+        reader = PdfReader(expediente.archivo_pdf.path)
+        writer = PdfWriter()
+
+        for page_index in nuevo_orden:
+            writer.add_page(reader.pages[page_index])
+
+        output = io.BytesIO()
+        writer.write(output)
+
+        expediente.archivo_pdf.save(f"expediente_{expediente.id}_reordenado.pdf", ContentFile(output.getvalue()))
+        expediente.save()
+
+        return Response({"detail": "Páginas reordenadas correctamente."}, status=status.HTTP_200_OK)
+
+class AsignarPaginasAPIView(APIView):
+    def post(self, request):
+        serializer = AsignarPaginasSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        documento_id = serializer.validated_data["documento_id"]
+        asignaciones = serializer.validated_data["asignaciones"]
+
+        try:
+            documento = Documento.objects.get(id=documento_id)
+        except Documento.DoesNotExist:
+            return Response({"detail": "Documento no encontrado."}, status=status.HTTP_404_NOT_FOUND)
+
+        pdf_path = documento.archivo.path
+        pdf_reader = PdfReader(pdf_path)
+        paginas_usadas = set()
+
+        for asignacion in asignaciones:
+            page_num = asignacion["page"] - 1  # PyPDF2 usa índice base 0
+            tipo_id = asignacion["tipo"]
+
+            if page_num in paginas_usadas or page_num < 0 or page_num >= len(pdf_reader.pages):
+                continue
+
+            paginas_usadas.add(page_num)
+
+            # Extraer la página y crear nuevo PDF
+            pdf_writer = PdfWriter()
+            pdf_writer.add_page(pdf_reader.pages[page_num])
+            buffer = io.BytesIO()
+            pdf_writer.write(buffer)
+            buffer.seek(0)
+
+            file_content = ContentFile(buffer.read())
+
+            # Obtener nombre base sin extensión
+            nombre_base = Path(documento.nombre_original).stem
+            nuevo_nombre = f"{nombre_base}_p{page_num + 1}.pdf"
+
+            # Validar existencia del tipo de documento
+            try:
+                tipo_documento = TipoDocumento.objects.get(id=tipo_id)
+            except TipoDocumento.DoesNotExist:
+                return Response({"detail": f"TipoDocumento con ID {tipo_id} no existe."}, status=400)
+
+            # Crear expediente sin documento aún
+            expediente = ExpedienteDeclaracion.objects.create(
+                declaracion=documento.content_object,
+                tipo=tipo_documento,
+                usuario=request.user
+            )
+
+            # Crear y guardar el nuevo documento
+            nuevo_documento = Documento(
+                nombre_original=nuevo_nombre,
+                usuario=request.user,
+                content_object=expediente
+            )
+            nuevo_documento.archivo.save(nuevo_nombre, file_content)
+            nuevo_documento.save()
+
+            # Asociar el documento al expediente
+            expediente.documento = nuevo_documento
+            expediente.save()
+
+        return Response({"detail": "Asignación de páginas completada."}, status=status.HTTP_201_CREATED)
+
+class ListarExpedientesDeclaracionView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        numero = request.query_params.get('numero')
+        anio_fiscal = request.query_params.get('anio_fiscal')
+        mes_fiscal = request.query_params.get('mes_fiscal')
+
+        queryset = ExpedienteDeclaracion.objects.select_related('declaracion')
+
+        if numero:
+            queryset = queryset.filter(declaracion__numero__icontains=numero.lstrip('0'))
+
+        if anio_fiscal:
+            queryset = queryset.filter(anio_fiscal=anio_fiscal)
+
+        if mes_fiscal:
+            queryset = queryset.filter(mes_fiscal=mes_fiscal)
+
+        serializer = ExpedienteDeclaracionListadoSerializer(queryset, many=True)
+        return Response(serializer.data)
+
+class ListarExpedientesAgrupadosView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        numero = request.query_params.get('numero')
+        anio_fiscal = request.query_params.get('anio_fiscal')
+        mes_fiscal = request.query_params.get('mes_fiscal')
+        empresa = request.query_params.get('empresa')
+
+        queryset = ExpedienteDeclaracion.objects.select_related('declaracion')
+
+        # Filtros
+        if numero:
+            queryset = queryset.filter(declaracion__numero__icontains=numero.lstrip("0"))
+        if anio_fiscal:
+            queryset = queryset.filter(anio_fiscal=anio_fiscal)
+        if mes_fiscal:
+            queryset = queryset.filter(mes_fiscal=mes_fiscal)
+        if empresa:
+            queryset = queryset.filter(empresa=empresa)
+
+        agrupados = (
+            queryset
+            .values(
+                'declaracion__id',
+                'declaracion__numero',
+                'declaracion__anio',
+            )
+            .annotate(
+                cantidad_documentos=Count('id'),
+                anio_fiscal=Min('anio_fiscal'),
+                mes_fiscal=Min('mes_fiscal'),
+                empresa=Min('empresa')  # Nueva línea
+            )
+            .order_by('-declaracion__anio', '-declaracion__numero')
+        )
+
+        resultado = [
+            {
+                'id': item['declaracion__id'],
+                'numero_declaracion': item['declaracion__numero'],
+                'anio_declaracion': item['declaracion__anio'],
+                'cantidad_documentos': item['cantidad_documentos'],
+                'anio_fiscal': item['anio_fiscal'],
+                'mes_fiscal': item['mes_fiscal'],
+                'empresa': item['empresa'],
+            }
+            for item in agrupados
+        ]
+
+        return Response(resultado)
+
+class ListarDocumentosPorTipoView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, declaracion_id):
+        queryset = (
+            ExpedienteDeclaracion.objects
+            .filter(declaracion_id=declaracion_id)
+            .select_related('documento__usuario', 'tipo')
+        )
+
+        # Agrupamos por ID de tipo (para poder ordenarlo), pero guardamos el nombre también
+        grupos_por_tipo = {}
+
+        for expediente in queryset:
+            if expediente.tipo:
+                tipo_id = expediente.tipo.id
+                tipo_nombre = expediente.tipo.nombre
+            else:
+                tipo_id = 0  # usamos 0 para "Sin clasificar"
+                tipo_nombre = "Sin clasificar"
+
+            if tipo_id not in grupos_por_tipo:
+                grupos_por_tipo[tipo_id] = {
+                    "nombre": tipo_nombre,
+                    "documentos": []
+                }
+
+            serialized = DocumentoExpedienteSerializer(expediente).data
+            grupos_por_tipo[tipo_id]["documentos"].append(serialized)
+
+        # Ordenamos por ID de tipo y reestructuramos como dict con el nombre como clave
+        agrupado = OrderedDict()
+        for tipo_id in sorted(grupos_por_tipo.keys()):
+            nombre = grupos_por_tipo[tipo_id]["nombre"]
+            documentos = grupos_por_tipo[tipo_id]["documentos"]
+            agrupado[nombre] = documentos
+
+        return Response(agrupado)
+
+class EliminarExpedienteDeclaracionView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        try:
+            expediente = ExpedienteDeclaracion.objects.select_related('documento').get(pk=pk)
+            documento = expediente.documento
+
+            # Primero eliminamos el archivo del sistema de archivos
+            archivo_path = documento.archivo.path
+            if os.path.isfile(archivo_path):
+                os.remove(archivo_path)
+
+            # Luego eliminamos el objeto Documento (esto eliminará también la relación ExpedienteDeclaracion por cascade o directamente)
+            documento.delete()
+
+            return Response({'detail': 'Documento y expediente eliminados'}, status=status.HTTP_204_NO_CONTENT)
+
+        except ExpedienteDeclaracion.DoesNotExist:
+            return Response({'detail': 'No encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+        except Exception as e:
+            return Response({'detail': f'Error al eliminar: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+class ActualizarEmpresaExpedienteView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, declaracion_id):
+        empresa = request.data.get('empresa')
+
+        if not empresa:
+            return Response(
+                {"detail": "Debe proporcionar empresa"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        expedientes = ExpedienteDeclaracion.objects.filter(declaracion_id=declaracion_id)
+
+        if not expedientes.exists():
+            return Response(
+                {"detail": "No se encontraron expedientes para la declaración especificada"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        expedientes.update(empresa=empresa)
+
+        return Response(
+            {"detail": "empresa actualizada correctamente"},
+            status=status.HTTP_200_OK
+        )
+
+class ActualizarFolioExpedienteView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, pk):
+        try:
+            expediente = ExpedienteDeclaracion.objects.get(pk=pk)
+        except ExpedienteDeclaracion.DoesNotExist:
+            return Response({'detail': 'No encontrado'}, status=status.HTTP_404_NOT_FOUND)
+
+        serializer = ExpedienteDeclaracionFolioSerializer(expediente, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class ActualizarMesAnioFiscalView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, declaracion_id):
+        anio_fiscal = request.data.get('anio_fiscal')
+        mes_fiscal = request.data.get('mes_fiscal')
+
+        if not anio_fiscal or not mes_fiscal:
+            return Response(
+                {"detail": "Debe proporcionar anio_fiscal y mes_fiscal"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        expedientes = ExpedienteDeclaracion.objects.filter(declaracion_id=declaracion_id)
+
+        if not expedientes.exists():
+            return Response(
+                {"detail": "No se encontraron expedientes para la declaración especificada"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        expedientes.update(anio_fiscal=anio_fiscal, mes_fiscal=mes_fiscal)
+
+        return Response(
+            {"detail": "Mes y año fiscal actualizados correctamente"},
+            status=status.HTTP_200_OK
+        )
+
+class TipoDocumentoViewSet(viewsets.ModelViewSet):
+    queryset = TipoDocumento.objects.all()
+    serializer_class = TipoDocumentoSerializer
+    permission_classes = [IsAuthenticated]
+
+class DescargarDocumentosUnificadosPDFView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, declaracion_id):
+        expedientes = (
+            ExpedienteDeclaracion.objects
+            .filter(declaracion_id=declaracion_id)
+            .select_related('documento', 'tipo')
+        )
+
+        # Agrupar por tipo_id para mantener el orden deseado
+        grupos_por_tipo = {}
+        for exp in expedientes:
+            tipo_id = exp.tipo.id if exp.tipo else 0
+            grupos_por_tipo.setdefault(tipo_id, []).append(exp)
+
+        writer = PdfWriter()
+
+        for tipo_id in sorted(grupos_por_tipo.keys()):
+            for exp in grupos_por_tipo[tipo_id]:
+                doc = exp.documento
+                if not doc or not doc.archivo:
+                    continue
+
+                try:
+                    reader = PdfReader(doc.archivo.path)
+                except Exception as e:
+                    print(f"Error al leer PDF: {e}")
+                    continue
+
+                for page_num in range(len(reader.pages)):
+                    page = reader.pages[page_num]
+
+                    # Obtener tamaño real de la página
+                    media_box = page.mediabox
+                    page_width = float(media_box.width)
+                    page_height = float(media_box.height)
+
+                    # Crear overlay con el folio en posición precisa
+                    overlay_stream = io.BytesIO()
+                    c = canvas.Canvas(overlay_stream, pagesize=(page_width, page_height))
+                    c.setFont("Helvetica-Bold", 10)
+                    c.setFillColorRGB(1, 0, 0)
+
+                    # Posición del texto: centro horizontal y 0.2 cm desde el borde superior
+                    folio_y = page_height - 0.6 * cm
+                    c.drawCentredString((page_width / 2)-100, folio_y, exp.folio or "")
+                    c.save()
+
+                    overlay_stream.seek(0)
+                    overlay_pdf = PdfReader(overlay_stream)
+                    overlay_page = overlay_pdf.pages[0]
+
+                    page.merge_page(overlay_page)
+                    writer.add_page(page)
+
+        # Preparar respuesta HTTP
+        output_stream = io.BytesIO()
+        writer.write(output_stream)
+        output_stream.seek(0)
+
+        response = HttpResponse(output_stream.read(), content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="documentos_unificados_{declaracion_id}.pdf"'
+        return response
 
 
 

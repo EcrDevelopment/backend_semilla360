@@ -1,5 +1,6 @@
 from django.db import models
 
+
 class Departamento(models.Model):
     id = models.CharField(max_length=2, primary_key=True)  # Clave primaria con 2 caracteres
     name = models.CharField(max_length=45)
@@ -32,3 +33,4 @@ class Distrito(models.Model):
 
     def __str__(self):
         return self.name
+

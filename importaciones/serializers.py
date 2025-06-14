@@ -1,6 +1,10 @@
+from django.contrib.auth.models import User
 from rest_framework import serializers
+
+
 from .models import Producto, Despacho, DetalleDespacho, ConfiguracionDespacho, GastosExtra, OrdenCompraDespacho, \
-    Empresa, OrdenCompra, ProveedorTransporte, Transportista,Documento,Declaracion
+    Empresa, OrdenCompra, ProveedorTransporte, Transportista, Documento, Declaracion, ExpedienteDeclaracion, \
+    TipoDocumento
 
 
 class FloatDecimalField(serializers.DecimalField):
@@ -96,29 +100,120 @@ class DespachoSerializer(serializers.ModelSerializer):
         model = Despacho
         fields = '__all__'
 
+class UsuarioMiniSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ['id', 'first_name', 'last_name']
 
 class DocumentoSerializer(serializers.ModelSerializer):
+    usuario=UsuarioMiniSerializer(read_only=True)
     class Meta:
         model = Documento
         fields = '__all__'
-
-
 
 class DeclaracionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Declaracion
         fields = ['id', 'numero', 'anio']
 
-
 class DocumentoListadoSerializer(serializers.ModelSerializer):
     class Meta:
         model = Documento
         fields = ['id', 'nombre_original', 'archivo', 'fecha_subida']
 
-
 class DeclaracionConDocumentosSerializer(serializers.ModelSerializer):
     documentos = DocumentoListadoSerializer(many=True, read_only=True)
+    documentos_count = serializers.SerializerMethodField()
+
+    def get_documentos_count(self, obj):
+        return obj.documentos.count()
 
     class Meta:
         model = Declaracion
-        fields = ['id', 'numero', 'anio', 'fecha_registro', 'documentos']
+        fields = ['id', 'numero', 'anio', 'fecha_registro', 'documentos','documentos_count']
+
+class PaginaAsignadaSerializer(serializers.Serializer):
+    page = serializers.IntegerField(min_value=1)
+    tipo = serializers.CharField()
+
+class AsignarPaginasSerializer(serializers.Serializer):
+    documento_id = serializers.IntegerField()
+    asignaciones = PaginaAsignadaSerializer(many=True)
+
+class ExpedienteDeclaracionListadoSerializer(serializers.ModelSerializer):
+    id = serializers.IntegerField(source='declaracion.id')
+    numero_declaracion = serializers.CharField(source='declaracion.numero')
+    anio_declaracion = serializers.IntegerField(source='declaracion.anio')
+    cantidad_documentos = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ExpedienteDeclaracion
+        fields = [
+            'id',  # ahora será el ID de la declaración
+            'numero_declaracion',
+            'anio_declaracion',
+            'cantidad_documentos',
+            'anio_fiscal',
+            'mes_fiscal',
+        ]
+
+    def get_cantidad_documentos(self, obj):
+        return ExpedienteDeclaracion.objects.filter(declaracion=obj.declaracion).count()
+
+class DocumentoExpedienteSerializer(serializers.ModelSerializer):
+    documento_id = serializers.IntegerField(source='documento.id')
+    nombre_original = serializers.CharField(source='documento.nombre_original')
+    fecha_subida = serializers.DateTimeField(source='documento.fecha_subida', format="%Y-%m-%d %H:%M")
+    usuario = serializers.SerializerMethodField()
+    archivo_url = serializers.SerializerMethodField()
+    tipo = serializers.SerializerMethodField()  # ← Campo robusto
+
+    class Meta:
+        model = ExpedienteDeclaracion
+        fields = [
+            'id',
+            'documento_id',
+            'nombre_original',
+            'fecha_subida',
+            'usuario',
+            'archivo_url',
+            'tipo',
+            'folio',
+            'empresa',
+            'anio_fiscal',
+            'mes_fiscal',
+        ]
+
+    def get_usuario(self, obj):
+        usuario = getattr(obj.documento, 'usuario', None)
+        if usuario:
+            return f"{usuario.first_name} {usuario.last_name}"
+        return None
+
+    def get_archivo_url(self, obj):
+        if obj.documento and obj.documento.archivo:
+            return obj.documento.archivo.url
+        return None
+
+    def get_tipo(self, obj):
+        #print(f"DEBUG tipo: {repr(obj.tipo)} ({type(obj.tipo)}) (nombre:{obj.tipo.nombre})")
+        return obj.tipo.nombre if obj.tipo else "Sin clasificar"
+
+class ExpedienteDeclaracionFolioSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ExpedienteDeclaracion
+        fields = ['id', 'folio']
+
+class TipoDocumentoSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TipoDocumento
+        fields = '__all__'
+
+
+
+
+
+
+
+
+

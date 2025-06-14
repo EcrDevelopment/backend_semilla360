@@ -1,14 +1,14 @@
 from collections import defaultdict
-
 from django.contrib.contenttypes.models import ContentType
-from rest_framework import status
+from rest_framework import status, generics
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from .serializers import PasswordResetSerializer, PasswordResetConfirmSerializer,CustomTokenObtainPairSerializer
 from rest_framework.permissions import AllowAny
 from django.contrib.auth.models import User
-from .models import PasswordResetToken
+from .models import PasswordResetToken,Empresa,Direccion
+from localizacion.models import Departamento, Provincia, Distrito
 from rest_framework_simplejwt.views import TokenObtainPairView,TokenRefreshView
 from django.http import JsonResponse
 from django.conf import settings
@@ -16,7 +16,8 @@ from rest_framework.utils import json
 from django.middleware.csrf import get_token
 from rest_framework import viewsets, permissions
 from django.contrib.auth.models import User, Group, Permission
-from .serializers import UserSerializer, RoleSerializer, PermissionSerializer
+from .serializers import UserSerializer, RoleSerializer, PermissionSerializer, EmpresaSerializer,DireccionSerializer
+from localizacion.serializers import  DepartamentoSerializer,ProvinciaSerializer,DistritoSerializer
 from rolepermissions.checkers import has_role
 from rest_framework.permissions import BasePermission
 
@@ -51,8 +52,9 @@ class PasswordResetConfirmView(APIView):
             user.set_password(new_password)
             user.save()
 
-            # Eliminar el token después de usarlo
-            PasswordResetToken.objects.filter(token=token, user_id=user_id).delete()
+            #Cambia estado del password
+            PasswordResetToken.objects.filter(user_id=user_id).update(active=False)
+
 
             return Response({"message": "Contraseña restablecida con éxito."}, status=status.HTTP_200_OK)
 
@@ -115,7 +117,7 @@ class RoleViewSet(viewsets.ModelViewSet):
 
 # User ViewSet - only admin role
 class UserViewSet(viewsets.ModelViewSet):
-    queryset = User.objects.all()
+    queryset = User.objects.select_related("userprofile").all()
     serializer_class = UserSerializer
     permission_classes = [permissions.IsAuthenticated, IsAdminRole]
 
@@ -141,3 +143,42 @@ def fetch_content_types(request):
 
     except Exception as e:
         return Response({'error': str(e)}, status=500)
+
+
+# Vistas para Departamento, Provincia y Distrito
+class DepartamentoListView(generics.ListAPIView):
+    queryset = Departamento.objects.all()
+    serializer_class = DepartamentoSerializer
+
+class ProvinciaListView(generics.ListAPIView):
+    queryset = Provincia.objects.all()
+    serializer_class = ProvinciaSerializer
+
+class DistritoListView(generics.ListAPIView):
+    queryset = Distrito.objects.all()
+    serializer_class = DistritoSerializer
+
+# Vistas para Empresa y Direccion
+class EmpresaListView(generics.ListCreateAPIView):
+    queryset = Empresa.objects.all()
+    serializer_class = EmpresaSerializer
+
+class EmpresaDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = Empresa.objects.all()
+    serializer_class = EmpresaSerializer
+
+
+class DireccionDetailView(generics.RetrieveUpdateDestroyAPIView):
+    queryset = Direccion.objects.all()
+    serializer_class = DireccionSerializer
+
+class DireccionListCreateView(generics.ListCreateAPIView):
+    queryset = Direccion.objects.all()
+    serializer_class = DireccionSerializer
+
+
+class DireccionesPorEmpresaView(APIView):
+    def get(self, request, empresa_id):
+        direcciones = Direccion.objects.filter(empresa_id=empresa_id)
+        serializer = DireccionSerializer(direcciones, many=True)
+        return Response(serializer.data)

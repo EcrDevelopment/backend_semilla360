@@ -1,11 +1,13 @@
 from rest_framework import serializers
 from django.conf import settings
-from django.contrib.auth.models import User
 from rest_framework_simplejwt.tokens import RefreshToken,AccessToken
 from django.core.mail import EmailMultiAlternatives
 from django.template.loader import render_to_string
 from django.utils.html import strip_tags
-from .models import PasswordResetToken
+
+from localizacion.serializers import DepartamentoSerializer, ProvinciaSerializer, DistritoSerializer
+from .models import PasswordResetToken, UserProfile, Empresa, Direccion
+from  localizacion.models import  Departamento, Provincia, Distrito
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from rolepermissions.roles import get_user_roles
 from rolepermissions.permissions import available_perm_status
@@ -18,27 +20,32 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     @classmethod
     def get_token(cls, user):
         token = super().get_token(user)
-        # Roles → lista de strings
-        token['roles'] = [ role.get_name() for role in get_user_roles(user) ]
-        # Permisos → dict { permiso: True/False }
+        token['roles'] = [role.get_name() for role in get_user_roles(user)]
         token['permissions'] = available_perm_status(user)
         return token
 
     def validate(self, attrs):
         data = super().validate(attrs)
 
-        # Tu bloque de user info
-        data['user'] = {
-            'id':       self.user.id,
+        user_info = {
+            'id': self.user.id,
             'username': self.user.username,
-            'email':    self.user.email,
-            'nombre':   self.user.first_name,
+            'email': self.user.email,
+            'nombre': self.user.first_name,
             'apellido': self.user.last_name,
+            'profile_id': None,
+            'empresa_id': None
         }
 
-        # Roles y permisos en la respuesta JSON
-        data['roles']       = [ role.get_name() for role in get_user_roles(self.user) ]
+        profile = getattr(self.user, 'userprofile', None)
+        if profile:
+            user_info['telefono'] = profile.telefono if profile.telefono else None
+            user_info['empresa_id'] = profile.empresa.id if profile.empresa else None
+
+        data['user'] = user_info
+        data['roles'] = [role.get_name() for role in get_user_roles(self.user)]
         data['permissions'] = available_perm_status(self.user)
+
         return data
 
 class PasswordResetSerializer(serializers.Serializer):
@@ -52,6 +59,9 @@ class PasswordResetSerializer(serializers.Serializer):
     def save(self):
         email = self.validated_data['email']
         user = User.objects.get(email=email)
+
+        # Desactivar tokens anteriores antes de generar uno nuevo
+        PasswordResetToken.objects.filter(user=user, active=True).update(active=False)
 
         # Generar el token de acceso JWT
         token = RefreshToken.for_user(user).access_token
@@ -102,9 +112,14 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
         except PasswordResetToken.DoesNotExist:
             raise serializers.ValidationError("El token es inválido.")
 
+
         # Verifica si el token ha expirado
         if token_instance.is_expired():
             raise serializers.ValidationError("El token ha expirado, realiza una nueva solicitud.")
+
+        # Verifica si el token esta activo
+        if not token_instance.active:
+            raise serializers.ValidationError("El token ya ha sido usado o invalidado.")
 
         # Verifica si el user_id coincide con el del token
         if token_instance.user.id != user_id:
@@ -142,51 +157,101 @@ class RoleSerializer(serializers.ModelSerializer):  # Role == Group
         model = Group
         fields = ['id', 'name', 'permissions']
 
-class UserSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, required=True, min_length=6)
-    roles = serializers.PrimaryKeyRelatedField(
-        many=True, source='groups', queryset=Group.objects.all(), required=False
-    )
-    permissions = serializers.PrimaryKeyRelatedField(
-        many=True, source='user_permissions', queryset=Permission.objects.all(), required=False
+class UserProfileSerializer(serializers.ModelSerializer):
+    empresa_id = serializers.PrimaryKeyRelatedField(
+        queryset=Empresa.objects.all(),
+        source="empresa",
+        required=False,
+        allow_null=True,
     )
 
     class Meta:
+        model = UserProfile
+        fields = ["empresa_id", "telefono"]
+
+class UserSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, required=False, min_length=8)
+    roles = serializers.PrimaryKeyRelatedField(
+        many=True, source="groups", queryset=Group.objects.all(), required=False
+    )
+    permissions = serializers.PrimaryKeyRelatedField(
+        many=True, source="user_permissions", queryset=Permission.objects.all(), required=False
+    )
+    userprofile = UserProfileSerializer(required=False)  # <-- aquí va anidado
+
+    class Meta:
         model = User
-        fields = ['id', 'username', 'password', 'email', 'first_name', 'last_name', 'roles', 'permissions']
-        read_only_fields = ['id']
+        fields = [
+            "id", "username", "password", "email", "first_name", "last_name",
+            "roles", "permissions", "userprofile"
+        ]
+        read_only_fields = ["id"]
+
+    def validate(self, attrs):
+        if self.instance is None and not attrs.get("password"):
+            raise serializers.ValidationError({"password": "La contraseña es obligatoria para crear un usuario."})
+        return super().validate(attrs)
 
     def create(self, validated_data):
-        roles = validated_data.pop('groups', [])
-        perms = validated_data.pop('user_permissions', [])
-        password = validated_data.pop('password')
-        # Create user with proper manager to hash password
+        roles = validated_data.pop("groups", [])
+        perms = validated_data.pop("user_permissions", [])
+        profile_data = validated_data.pop("userprofile", {})
+        password = validated_data.pop("password")
+
         user = User.objects.create_user(password=password, **validated_data)
-        # Assign roles and permissions
-        if roles:
-            user.groups.set(roles)
-        if perms:
-            user.user_permissions.set(perms)
+        user.groups.set(roles)
+        user.user_permissions.set(perms)
+
+        # Crear perfil asociado
+        UserProfile.objects.create(user=user, **profile_data)
+
         return user
 
     def update(self, instance, validated_data):
-        roles = validated_data.pop('groups', None)
-        perms = validated_data.pop('user_permissions', None)
-        password = validated_data.pop('password', None)
-        # Update basic fields
+        roles = validated_data.pop("groups", None)
+        perms = validated_data.pop("user_permissions", None)
+        profile_data = validated_data.pop("userprofile", {})
+        print('data: ',profile_data)
+        password = validated_data.pop("password", None)
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
-        # Update password if provided
+
         if password:
             instance.set_password(password)
-        # Assign roles and permissions
+        instance.save()
+
         if roles is not None:
             instance.groups.set(roles)
         if perms is not None:
             instance.user_permissions.set(perms)
-        instance.save()
+
+        # Actualizar o crear perfil
+        profile = getattr(instance, "userprofile", None)
+        if profile:
+            for attr, value in profile_data.items():
+                setattr(profile, attr, value)
+            profile.save()
+        elif profile_data:  # Solo crear si hay datos en profile_data
+            UserProfile.objects.create(user=instance, **profile_data)
+
         return instance
 
+class DireccionSerializer(serializers.ModelSerializer):
+    empresa = serializers.PrimaryKeyRelatedField(queryset=Empresa.objects.all())
+    departamento = DepartamentoSerializer()
+    provincia = ProvinciaSerializer()
+    distrito = DistritoSerializer()
+
+    class Meta:
+        model = Direccion
+        fields = '__all__'
+
+class EmpresaSerializer(serializers.ModelSerializer):
+    direcciones = DireccionSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Empresa
+        fields = '__all__'
 
 
 

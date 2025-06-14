@@ -1,7 +1,15 @@
 import hashlib
 import os
 
+from django.contrib.contenttypes.fields import GenericForeignKey, GenericRelation
+from django.contrib.contenttypes.models import ContentType
+from django.utils import timezone
+
+from django.contrib.auth.models import User
 from django.db import models
+
+import base.models
+
 
 #TABLAS DEL SERVIDOR STARSOFT
 
@@ -321,49 +329,105 @@ class GastosExtra(models.Model):
         return f"Gastos extra del despacho {self.despacho.id}"
 
 def ruta_documento(instance, filename):
-    numero = instance.declaracion.numero
-    anio = instance.declaracion.anio
-    carpeta = f"{numero}-{anio}"
-    return os.path.join("documentos", carpeta, filename)
+    carpeta = "documentos/sin_clasificar"
 
-class Declaracion(models.Model):
-    numero = models.CharField(max_length=50, unique=True)
+    try:
+        if isinstance(instance.content_object, Declaracion):
+            numero = instance.content_object.numero
+            anio = instance.content_object.anio
+            carpeta = f"documentos/docs_duas/{numero}-{anio}"
+
+        elif isinstance(instance.content_object, ExpedienteDeclaracion):
+            numero = instance.content_object.declaracion.numero
+            anio = instance.content_object.declaracion.anio
+            carpeta = f"documentos/expedientes/{numero}-{anio}"
+
+    except Exception as e:
+        # Esto ayuda si estás en modo debug
+        print(f"Error obteniendo ruta del documento: {e}")
+
+    return os.path.join(carpeta, filename)
+
+
+class Declaracion(base.models.BaseModel):
+    numero = models.CharField(max_length=50)
     fecha_registro = models.DateTimeField(auto_now_add=True)
-    anio = models.PositiveIntegerField(blank=True,null=True)
+    anio = models.PositiveIntegerField(blank=True, null=True)
+    documentos = GenericRelation('importaciones.Documento')
 
     class Meta:
         db_table = 'declaracion'
         unique_together = ('numero', 'anio')
 
-    def __str__(self):
-        return f"{self.numero}-{self.anio}"
+    def save(self, *args, **kwargs):
+        if self.numero:
+            self.numero = self.numero.lstrip('0')
+        super().save(*args, **kwargs)
 
-class Documento(models.Model):
-    declaracion = models.ForeignKey(Declaracion, on_delete=models.CASCADE, related_name='documentos')
+class Documento(base.models.BaseModel):
+    content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE, null=True, blank=True)
+    object_id = models.PositiveIntegerField(null=True, blank=True)
+    content_object = GenericForeignKey('content_type', 'object_id')
+
+    # Puedes mantener este mientras haces la transición:
+    #declaracion = models.ForeignKey('Declaracion', on_delete=models.CASCADE, related_name='documentos', null=True, blank=True)
+
     archivo = models.FileField(upload_to=ruta_documento)
     nombre_original = models.CharField(max_length=255)
-    hash_archivo = models.CharField(max_length=64, blank=True, null=True)  # SHA256
-    referencia_interna = models.CharField(max_length=100, blank=True, null=True)  # nombre de carpeta ZIP, si aplica
+    hash_archivo = models.CharField(max_length=64, blank=True, null=True)
+    referencia_interna = models.CharField(max_length=100, blank=True, null=True)
     fecha_subida = models.DateTimeField(auto_now_add=True)
+    usuario = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
 
     def save(self, *args, **kwargs):
         if not self.hash_archivo and self.archivo:
-            # Calcula hash solo si no ha sido calculado
             sha256 = hashlib.sha256()
             for chunk in self.archivo.chunks():
                 sha256.update(chunk)
             self.hash_archivo = sha256.hexdigest()
-
         super().save(*args, **kwargs)
 
     class Meta:
         db_table = 'documento'
-        indexes = [
-            models.Index(fields=['hash_archivo']),
-        ]
+        indexes = [models.Index(fields=['hash_archivo'])]
 
     def __str__(self):
         return self.nombre_original
+
+class TipoDocumento(base.models.BaseModel):
+    nombre = models.CharField(max_length=100, unique=True)
+    descripcion = models.TextField(blank=True, null=True)
+    uso_interno = models.BooleanField(default=True)  # True = usado por personal interno, False = para proveedor
+
+    class Meta:
+        db_table = 'tipo_documento'
+        verbose_name = 'Tipo de Documento'
+        verbose_name_plural = 'Tipos de Documentos'
+
+    def __str__(self):
+        return self.nombre
+
+class ExpedienteDeclaracion(base.models.BaseModel):
+    declaracion = models.ForeignKey(Declaracion, on_delete=models.CASCADE, related_name='expedientes')
+    documento = models.ForeignKey(
+        Documento, on_delete=models.CASCADE, related_name='expedientes', null=True, blank=True
+    )
+    descripcion = models.TextField(blank=True, null=True)
+    tipo = models.ForeignKey(TipoDocumento, on_delete=models.SET_NULL, null=True, blank=True,related_name='expedientes')
+    fecha = models.DateTimeField(auto_now_add=True)
+    usuario = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    anio_fiscal = models.PositiveIntegerField(null=True, blank=True)
+    mes_fiscal = models.PositiveIntegerField(null=True, blank=True)
+    folio = models.CharField(max_length=100, blank=True, null=True)
+    empresa = models.CharField(max_length=255, blank=True, null=True)
+
+    class Meta:
+        db_table = 'expediente_declaracion'
+        ordering = ['-fecha']
+
+    def __str__(self):
+        return f"Expediente de {self.declaracion} - {self.documento.nombre_original}"
+
 
 
 

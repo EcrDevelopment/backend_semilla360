@@ -1,9 +1,10 @@
 from django.urls import path
 from rest_framework_simplejwt.views import TokenVerifyView
-from .views import PasswordResetRequestView, PasswordResetConfirmView, CustomTokenObtainPairView, \
-    CustomTokenRefreshView, fetch_content_types
+
+from importaciones.views import EditarPDFView, CombinarPDFsDeclaracionView, AgregarDocumentosExistentesAPIView, \
+    ReordenarPaginasAPIView, DocumentosRelacionadosAPIView
 from . import views
-from .views import UserViewSet, RoleViewSet, PermissionViewSet
+from .views import *
 
 urlpatterns = [
     path('auth/login/',CustomTokenObtainPairView.as_view(), name='login'),
@@ -40,4 +41,20 @@ urlpatterns = [
         'patch': 'partial_update',
         'delete': 'destroy'
     }), name='permiso-detalle'),
+
+    # Empresas
+    path('empresas/', EmpresaListView.as_view(), name='empresa-list'),
+    path('empresas/<int:pk>/', EmpresaDetailView.as_view(), name='empresa-detail'),
+
+    # Direcciones
+    path('direcciones/', DireccionListCreateView.as_view(), name='direccion-list-create'),
+    path('direcciones/<int:pk>/', DireccionDetailView.as_view(), name='direccion-detail'),
+    path('empresas/<int:empresa_id>/direcciones/', DireccionesPorEmpresaView.as_view(), name='empresa-direcciones'),
+
+    # Departamentos, Provincias y Distritos
+    path('departamentos/', DepartamentoListView.as_view(), name='departamento-list'),
+    path('provincias/', ProvinciaListView.as_view(), name='provincia-list'),
+    path('distritos/', DistritoListView.as_view(), name='distrito-list'),
+
+
 ]
