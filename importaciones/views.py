@@ -2939,7 +2939,10 @@ class AsignarDeclaracionDesdeComprimidoView(APIView):
             if not carpeta or not numero or not anio:
                 continue
 
-            declaracion, _ = Declaracion.objects.get_or_create(numero=numero, anio=anio)
+            try:
+                declaracion, _ = Declaracion.objects.get_or_create(numero=numero, anio=anio)
+            except IntegrityError:
+                declaracion = Declaracion.objects.get(numero=numero, anio=anio)
 
             for file_name in archivo_comp.namelist():
                 if file_name.startswith(carpeta) and not file_name.endswith("/"):

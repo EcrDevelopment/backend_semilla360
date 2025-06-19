@@ -1,0 +1,15 @@
+# Ignorar entorno virtual y archivos relacionados con Python
+env
+__pycache__
+.pyc
+.pyo
+.vscode
+.idea
+.log
+.test.py
+.cache
+.DS_Store
+Thumbs.db
+semillaenv
+/media/
+/semilla360/settings.py
