@@ -182,6 +182,8 @@ class DocumentoExpedienteSerializer(serializers.ModelSerializer):
             'empresa',
             'anio_fiscal',
             'mes_fiscal',
+            'orden_compra',
+            'nota_ingreso',
         ]
 
     def get_usuario(self, obj):

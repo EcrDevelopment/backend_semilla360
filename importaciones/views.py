@@ -3530,16 +3530,20 @@ class EliminarExpedienteDeclaracionView(APIView):
 
     def delete(self, request, pk):
         try:
-            expediente = ExpedienteDeclaracion.objects.select_related('documento').get(pk=pk)
-            documento = expediente.documento
+            # Obtenemos el expediente
+            expediente = ExpedienteDeclaracion.objects.only('id', 'documento_id').get(pk=pk)
+            documento_id = expediente.documento_id
 
-            # Primero eliminamos el archivo del sistema de archivos
-            archivo_path = documento.archivo.path
-            if os.path.isfile(archivo_path):
+            # Eliminamos el expediente primero para romper la relación
+            expediente.delete()
+
+            # Obtenemos la ruta del archivo directamente sin cargar el modelo completo
+            archivo_path = Documento.objects.filter(pk=documento_id).values_list('archivo', flat=True).first()
+            if archivo_path and os.path.isfile(archivo_path):
                 os.remove(archivo_path)
 
-            # Luego eliminamos el objeto Documento (esto eliminará también la relación ExpedienteDeclaracion por cascade o directamente)
-            documento.delete()
+            # Eliminamos el documento directamente por ID (sin instanciar el objeto completo)
+            Documento.objects.filter(pk=documento_id).delete()
 
             return Response({'detail': 'Documento y expediente eliminados'}, status=status.HTTP_204_NO_CONTENT)
 
@@ -3547,6 +3551,8 @@ class EliminarExpedienteDeclaracionView(APIView):
             return Response({'detail': 'No encontrado'}, status=status.HTTP_404_NOT_FOUND)
 
         except Exception as e:
+            import traceback
+            print(traceback.format_exc())
             return Response({'detail': f'Error al eliminar: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class ActualizarEmpresaExpedienteView(APIView):
@@ -3670,7 +3676,8 @@ class DescargarDocumentosUnificadosPDFView(APIView):
 
                     # Posición del texto: centro horizontal y 0.2 cm desde el borde superior
                     folio_y = page_height - 0.6 * cm
-                    c.drawCentredString((page_width / 2)-100, folio_y, exp.folio or "")
+                    c.drawCentredString((page_width / 2)+100, folio_y, exp.folio or "")
+                    c.drawCentredString((page_width / 2) - 200, folio_y, f'OC: {exp.orden_compra}  / NI: {exp.nota_ingreso}' or "")
                     c.save()
 
                     overlay_stream.seek(0)
@@ -3688,6 +3695,34 @@ class DescargarDocumentosUnificadosPDFView(APIView):
         response = HttpResponse(output_stream.read(), content_type='application/pdf')
         response['Content-Disposition'] = f'attachment; filename="documentos_unificados_{declaracion_id}.pdf"'
         return response
+
+class ActualizarOrdenCompraNotaIngresoView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, declaracion_id):
+        orden_compra = request.data.get('orden_compra')
+        nota_ingreso = request.data.get('nota_ingreso')
+
+        if not orden_compra or not nota_ingreso:
+            return Response(
+                {"detail": "Debe proporcionar orden de compra y nota de ingreso"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        expedientes = ExpedienteDeclaracion.objects.filter(declaracion_id=declaracion_id)
+
+        if not expedientes.exists():
+            return Response(
+                {"detail": "No se encontraron expedientes para la declaración especificada"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        expedientes.update(nota_ingreso=nota_ingreso, orden_compra=orden_compra)
+
+        return Response(
+            {"detail": "Orden de compra y Nota de ingreso, actualizados correctamente"},
+            status=status.HTTP_200_OK
+        )
 
 
 

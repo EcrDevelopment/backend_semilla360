@@ -11,7 +11,7 @@ from .views import listar_importaciones, registrar_despacho, buscar_orden_import
     DocumentosRelacionadosAPIView, AsignarPaginasAPIView, ListarExpedientesDeclaracionView, \
     ListarExpedientesAgrupadosView, ListarDocumentosPorTipoView, EliminarExpedienteDeclaracionView, \
     ActualizarMesAnioFiscalView, ActualizarFolioExpedienteView, TipoDocumentoViewSet, \
-    DescargarDocumentosUnificadosPDFView, ActualizarEmpresaExpedienteView
+    DescargarDocumentosUnificadosPDFView, ActualizarEmpresaExpedienteView, ActualizarOrdenCompraNotaIngresoView
 from .views import CargaDirectaView, ProcesarArchivoComprimidoView, AsignarDeclaracionDesdeComprimidoView
 from .views import ProcesarArchivoView,GuardarArchivoView
 from graphene_django.views import GraphQLView
@@ -65,6 +65,7 @@ urlpatterns = [
     path('expedientes/<int:pk>/actualizar-folio/', ActualizarFolioExpedienteView.as_view(), name='actualizar_folio_expediente'),
     path('expedientes/<int:declaracion_id>/actualizar-empresa/', ActualizarEmpresaExpedienteView.as_view(), name='actualizar_empresa_expediente'),
     path("expedientes/<int:declaracion_id>/descargar_unificado/", DescargarDocumentosUnificadosPDFView.as_view()),
+    path('expedientes/<int:declaracion_id>/actualizar_nota_ingreso_orden_compra/', ActualizarOrdenCompraNotaIngresoView.as_view(),name='actualizar_nota_ingreso_orden_compra'),
 ]
 
 

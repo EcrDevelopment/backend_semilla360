@@ -420,13 +420,17 @@ class ExpedienteDeclaracion(base.models.BaseModel):
     mes_fiscal = models.PositiveIntegerField(null=True, blank=True)
     folio = models.CharField(max_length=100, blank=True, null=True)
     empresa = models.CharField(max_length=255, blank=True, null=True)
+    nota_ingreso = models.CharField(max_length=10, blank=True, null=True)
+    orden_compra = models.CharField(max_length=10, blank=True, null=True)
 
     class Meta:
         db_table = 'expediente_declaracion'
         ordering = ['-fecha']
 
     def __str__(self):
-        return f"Expediente de {self.declaracion} - {self.documento.nombre_original}"
+        declaracion_str = str(self.declaracion) if self.declaracion else "Sin declaración"
+        documento_str = self.documento.nombre_original if self.documento and self.documento.nombre_original else "Sin documento"
+        return f"Expediente de {declaracion_str} - {documento_str}"
 
 
 
