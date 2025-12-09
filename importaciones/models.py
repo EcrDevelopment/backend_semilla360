@@ -8,7 +8,7 @@ from django.utils import timezone
 from django.contrib.auth.models import User
 from django.db import models
 
-import base.models
+from base.models import BaseModel
 
 
 #TABLAS DEL SERVIDOR STARSOFT
@@ -114,7 +114,6 @@ class OrdenCompraDetStarsoft(models.Model):
     def __str__(self):
         return f"{self.cnumero}"
 
-
 class Proveedor(models.Model):
     PRVCCODIGO = models.CharField(max_length=11, primary_key=True, db_column='PRVCCODIGO')
     PRVCNOMBRE = models.CharField(max_length=100, blank=True, null=True, db_column='PRVCNOMBRE')
@@ -168,45 +167,44 @@ class Proveedor(models.Model):
 
 #TABLAS CREADAS EN MYSQL
 
-class Empresa(models.Model):
-    nombre_empresa = models.CharField(max_length=255)
-    fecha_de_creacion = models.DateTimeField(auto_now_add=True)
-    fecha_de_actualizacion = models.DateTimeField(auto_now=True)
+class Empresa(BaseModel):
+
+    nombre_empresa = models.CharField('Nombre bd', max_length=255)
+    razon_social = models.CharField('Razón Social', max_length=255, null=True, blank=True )
+    ruc = models.CharField('RUC',max_length=11, null=True,blank=True)
 
     class Meta:
         db_table = 'empresa'
-
+        verbose_name = 'Empresa'
+        verbose_name_plural = 'Empresas'
 
     def __str__(self):
-        return self.nombre_empresa
+        return self.razon_social or self.nombre_empresa
 
-class Producto(models.Model):
+class Producto(BaseModel):
+
+    # --- ¡NUEVO CAMPO DE RELACIÓN! ---
+    empresa = models.ForeignKey(
+        Empresa,
+        on_delete=models.CASCADE,
+        related_name='productos',
+        verbose_name='Empresa Propietaria',
+        null=True,
+        blank=True
+    )
     nombre_producto = models.CharField(max_length=255)
     codigo_producto = models.CharField(max_length=255)
     proveedor_marca = models.CharField(max_length=255)
-    fecha_de_creacion = models.DateTimeField(auto_now_add=True)
-    fecha_de_actualizacion = models.DateTimeField(auto_now=True)
+
+
 
     class Meta:
         db_table = 'producto'
+        verbose_name = 'Producto'
+        verbose_name_plural = 'Productos'
 
     def __str__(self):
         return self.nombre_producto
-
-class OrdenCompra(models.Model):
-    empresa = models.ForeignKey('Empresa', on_delete=models.CASCADE)
-    numero_oc = models.CharField(max_length=50, unique=True)
-    producto = models.ForeignKey('Producto', on_delete=models.CASCADE)
-    precio_producto = models.DecimalField(max_digits=10, decimal_places=3)  # Precio definido en la orden
-    cantidad = models.PositiveIntegerField()
-    fecha_de_creacion = models.DateTimeField(auto_now_add=True)
-    fecha_de_actualizacion = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        db_table = 'orden_compra'
-
-    def __str__(self):
-        return self.numero_oc
 
 class ProveedorTransporte(models.Model):
     nombre_proveedor = models.CharField(max_length=255)
@@ -230,6 +228,20 @@ class Transportista(models.Model):
     def __str__(self):
         return self.nombre_transportista
 
+class OrdenCompra(models.Model):
+    empresa = models.ForeignKey('Empresa', on_delete=models.CASCADE)
+    numero_oc = models.CharField(max_length=50, unique=True)
+    producto = models.ForeignKey('Producto', on_delete=models.CASCADE)
+    precio_producto = models.DecimalField(max_digits=10, decimal_places=3)  # Precio definido en la orden
+    cantidad = models.PositiveIntegerField(null=True, blank=True,default=0)
+    fecha_de_creacion = models.DateTimeField(auto_now_add=True)
+    fecha_de_actualizacion = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'orden_compra'
+
+    def __str__(self):
+        return self.numero_oc
 
 class Despacho(models.Model):
     proveedor = models.ForeignKey(ProveedorTransporte, on_delete=models.CASCADE)
@@ -251,7 +263,6 @@ class Despacho(models.Model):
 
     def __str__(self):
         return f"Despacho {self.id}"
-
 
 class OrdenCompraDespacho(models.Model):
     despacho = models.ForeignKey(
@@ -299,13 +310,14 @@ class DetalleDespacho(models.Model):
 class ConfiguracionDespacho(models.Model):
     despacho = models.ForeignKey(Despacho, on_delete=models.CASCADE)
     merma_permitida = models.DecimalField(max_digits=10, decimal_places=2)
-    precio_prod = models.DecimalField(max_digits=10, decimal_places=3)
+    precio_prod = models.DecimalField(max_digits=10, decimal_places=5)
     gastos_nacionalizacion = models.DecimalField(max_digits=10, decimal_places=2)
     margen_financiero = models.DecimalField(max_digits=10, decimal_places=2)
     precio_sacos_rotos = models.DecimalField(max_digits=10, decimal_places=2)
     precio_sacos_humedos = models.DecimalField(max_digits=10, decimal_places=2)
     precio_sacos_mojados = models.DecimalField(max_digits=10, decimal_places=2)
     tipo_cambio_desc_ext = models.DecimalField(max_digits=10, decimal_places=3)
+    precio_estiba= models.DecimalField(max_digits=10, decimal_places=2,null=True)
     fecha_de_creacion = models.DateTimeField(auto_now_add=True)
     fecha_de_actualizacion = models.DateTimeField(auto_now=True)
 
@@ -349,7 +361,7 @@ def ruta_documento(instance, filename):
     return os.path.join(carpeta, filename)
 
 
-class Declaracion(base.models.BaseModel):
+class Declaracion(BaseModel):
     numero = models.CharField(max_length=50)
     fecha_registro = models.DateTimeField(auto_now_add=True)
     anio = models.PositiveIntegerField(blank=True, null=True)
@@ -364,7 +376,7 @@ class Declaracion(base.models.BaseModel):
             self.numero = self.numero.lstrip('0')
         super().save(*args, **kwargs)
 
-class Documento(base.models.BaseModel):
+class Documento(BaseModel):
     content_type = models.ForeignKey(ContentType, on_delete=models.CASCADE, null=True, blank=True)
     object_id = models.PositiveIntegerField(null=True, blank=True)
     content_object = GenericForeignKey('content_type', 'object_id')
@@ -394,7 +406,7 @@ class Documento(base.models.BaseModel):
     def __str__(self):
         return self.nombre_original
 
-class TipoDocumento(base.models.BaseModel):
+class TipoDocumento(BaseModel):
     nombre = models.CharField(max_length=100, unique=True)
     descripcion = models.TextField(blank=True, null=True)
     uso_interno = models.BooleanField(default=True)  # True = usado por personal interno, False = para proveedor
@@ -407,7 +419,7 @@ class TipoDocumento(base.models.BaseModel):
     def __str__(self):
         return self.nombre
 
-class ExpedienteDeclaracion(base.models.BaseModel):
+class ExpedienteDeclaracion(BaseModel):
     declaracion = models.ForeignKey(Declaracion, on_delete=models.CASCADE, related_name='expedientes')
     documento = models.ForeignKey(
         Documento, on_delete=models.CASCADE, related_name='expedientes', null=True, blank=True

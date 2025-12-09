@@ -1,8 +1,6 @@
+#usuarios/urls.py
 from django.urls import path
 from rest_framework_simplejwt.views import TokenVerifyView
-
-from importaciones.views import EditarPDFView, CombinarPDFsDeclaracionView, AgregarDocumentosExistentesAPIView, \
-    ReordenarPaginasAPIView, DocumentosRelacionadosAPIView
 from . import views
 from .views import *
 

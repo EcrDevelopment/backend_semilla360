@@ -241,7 +241,7 @@ def procesar_data_reporte(data):
     precio_por_tonelada_final=round(precio_bruto_final/1.18,2)
 
     # Paso 2: Calcular el precio por kg
-    precio_por_kg = round(precio_bruto_final/1000,4)
+    precio_por_kg = round(precio_bruto_final/1000,5)
 
     # calcular descuento por sacos faltantes
     total_descuento_sacos_faltantes = round(peso_sacos_faltantes * precio_por_kg,2)

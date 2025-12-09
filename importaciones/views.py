@@ -1,13 +1,13 @@
 import hashlib
 import math
 import io
-import tempfile
+import requests
+import random
 import zipfile
-from collections import defaultdict, OrderedDict
-from datetime import datetime
+from collections import OrderedDict
 import traceback
 from pathlib import Path
-
+import openpyxl
 import fitz
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
@@ -15,14 +15,12 @@ from django.db import connections,IntegrityError,transaction
 from django.db.models import Q, Count, Min
 from django.utils.encoding import smart_str
 from django.utils.timezone import make_aware
-from pypdf import PdfReader, PdfWriter, PdfMerger
-
+from pypdf import PdfReader, PdfWriter
 from reportlab.lib.styles import getSampleStyleSheet
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 from reportlab.lib.units import cm
 from rest_framework import generics, status, permissions, viewsets
-from rest_framework.permissions import IsAuthenticated
-
+from rest_framework.permissions import IsAuthenticated, AllowAny
 
 from .models import (OrdenCompraStarsoft, GastosExtra, Proveedor, OrdenCompraDespacho, Empresa, OrdenCompra, Producto,
                      ProveedorTransporte, Transportista,
@@ -32,16 +30,14 @@ from .forms import BaseDatosForm
 from django.shortcuts import render
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse, HttpResponse, Http404, FileResponse
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, action
 import pandas as pd
 import pytesseract
 from PIL import Image
 import pdfplumber
 import json
 from django.shortcuts import get_object_or_404
-from .serializers import DespachoSerializer, DeclaracionConDocumentosSerializer, DocumentoSerializer, \
-    DocumentoListadoSerializer, AsignarPaginasSerializer, ExpedienteDeclaracionListadoSerializer, \
-    DocumentoExpedienteSerializer, ExpedienteDeclaracionFolioSerializer, TipoDocumentoSerializer
+from .serializers import *
 from .utils import renderizar_template, convertir_html_a_pdf, procesar_data_reporte, procesar_data_bd_reporte, \
     calcular_monto_descuento_estiba, calcular_peso_no_considerado_por_sacos_faltante, \
     calcular_diferencia_de_peso_por_cobrar_kg, calcular_costo_por_kg, calcular_descuento_sacos, \
@@ -53,12 +49,13 @@ from reportlab.pdfgen import canvas
 from reportlab.platypus import Table, TableStyle, Paragraph
 from reportlab.lib.colors import Color
 import rarfile
-rarfile.UNRAR_TOOL = r"C:\Program Files\WinRAR\UnRAR.exe"
+#rarfile.UNRAR_TOOL = r"C:\Program Files\WinRAR\UnRAR.exe"
 from django.conf import settings
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.contrib.contenttypes.models import ContentType
+from .utilities.dto_despacho import *
 import mimetypes
 
 
@@ -1305,6 +1302,7 @@ def registrar_despacho(request):
                 for orden_recojo in data_form.get('ordenRecojo', []):
                     oc_data = orden_recojo.get('oc', {})
                     numero_recojo = orden_recojo.get('numeroRecojo')
+                    peso_asignado = orden_recojo.get('peso_asignado',0)
 
                     # Validar datos de `oc_data`
                     if not all(k in oc_data for k in ['codigo_producto', 'producto', 'proveedor', 'numero_oc', 'precio_unitario', 'cantidad']):
@@ -1318,6 +1316,7 @@ def registrar_despacho(request):
                     )
 
                     # Crear o recuperar la OrdenCompra
+                    print(f'este es el precio que se asignara a la oc : ',oc_data['precio_unitario'])
                     orden_compra, _ = OrdenCompra.objects.get_or_create(
                         empresa=empresa,
                         numero_oc=oc_data['numero_oc'],
@@ -1345,7 +1344,7 @@ def registrar_despacho(request):
                     OrdenCompraDespacho.objects.create(
                         despacho=despacho,
                         orden_compra=orden_compra,
-                        cantidad_asignada=oc_data['cantidad'],
+                        cantidad_asignada=peso_asignado,
                         numero_recojo=numero_recojo
                     )
 
@@ -1379,7 +1378,8 @@ def registrar_despacho(request):
                     precio_sacos_rotos=data_extra_form.get('precioSacosRotos', 0.0),
                     precio_sacos_humedos=data_extra_form.get('precioSacosHumedos', 0.0),
                     precio_sacos_mojados=data_extra_form.get('precioSacosMojados', 0.0),
-                    tipo_cambio_desc_ext=data_extra_form.get('tipoCambioDescExt', 0.0)
+                    tipo_cambio_desc_ext=data_extra_form.get('tipoCambioDescExt', 0.0),
+                    precio_estiba=data_extra_form.get('precioEstibaTonelada', 0.0),
                 )
 
                 for item in data_extra_form.get('otrosGastos', []):
@@ -1442,57 +1442,68 @@ def listar_estiba(request):
             'sacos_descargados',
             'cant_desc',
             'despacho__configuraciondespacho__tipo_cambio_desc_ext',
+            'despacho__configuraciondespacho__precio_estiba',
             'despacho__transportista__nombre_transportista',
             'despacho__ordenes_compra__empresa__nombre_empresa'  # Incluir el nombre de la empresa en los resultados
         ).distinct())  # Agregar .distinct() para evitar duplicados
 
         # Agregar cálculo de `total_a_pagar`
         for row in resultados:
+            # Usa 4 como valor por defecto
+            precio_estiba = row.get('despacho__configuraciondespacho__precio_estiba')
+            precio_estiba = float(precio_estiba) if precio_estiba is not None else 4
+
             if row['pago_estiba'] == "No pago estiba":
-                total_a_pagar = (row['sacos_descargados'] * 50 / 1000) * 4
+                total_a_pagar = (row['sacos_descargados'] * 50 / 1000) * precio_estiba
                 row['sacos_pendientes_de_pago'] = row['sacos_descargados']
             elif row['pago_estiba'] == "Pago parcial":
-                total_a_pagar = (row['cant_desc'] * 50 / 1000) * 4
+                total_a_pagar = (row['cant_desc'] * 50 / 1000) * precio_estiba
                 row['sacos_pendientes_de_pago'] = row['cant_desc']
             else:
                 total_a_pagar = 0  # Si no coincide con ninguna condición
 
             # Agregar siempre el total a pagar
             row['total_a_pagar'] = f"S/ {total_a_pagar:.2f}"
+            row['precio_estiba'] = row['despacho__configuraciondespacho__precio_estiba']
 
         return JsonResponse({'status': 'success', 'data': resultados}, status=200)
 
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
 
+
 def listar_despachos(request):
     if request.method != 'GET':
         return JsonResponse({'status': 'error', 'message': 'Método no permitido'}, status=405)
 
     try:
-        # Obtener parámetros de ordenación
-        sort_field = request.GET.get('sortField', 'fecha_numeracion')  # Campo por defecto
-        sort_order = request.GET.get('sortOrder', 'descend')  # Orden por defecto
+        # Ordenamiento
+        sort_field = request.GET.get('sortField', 'fecha_numeracion')
+        sort_order = request.GET.get('sortOrder', 'descend')
 
-        # Convertir el orden a Django ORM
         if sort_order == 'descend':
-            orden = f"-{sort_field}"  # Agregar '-' para descendente
+            orden = f"-{sort_field}"
         else:
-            orden = f"{sort_field}"  # Sin '-' para ascendente
+            orden = f"{sort_field}"
 
-        print(f"Ordenando por: {orden}")  # Debug en la consola del servidor
-
-        # Obtener datos con ordenamiento dinámico
+        # Query base
         despachos = Despacho.objects.select_related(
             'proveedor', 'transportista'
         ).prefetch_related(
-            'ordenes_despacho__orden_compra'  # 🔹 Usar related_name correcto
-        ).all().order_by(orden)
+            'ordenes_despacho__orden_compra'
+        ).all()
 
+        # 🔹 Filtro por DUA
+        dua = request.GET.get('dua')
+        if dua:
+            despachos = despachos.filter(dua__icontains=dua)
+
+        # Aplicar orden
+        despachos = despachos.order_by(orden)
 
         # Paginación
-        page = request.GET.get('page', 1)
-        page_size = request.GET.get('page_size', 10)
+        page = int(request.GET.get('page', 1))
+        page_size = int(request.GET.get('page_size', 10))
         paginator = Paginator(despachos, page_size)
 
         try:
@@ -1500,9 +1511,9 @@ def listar_despachos(request):
         except PageNotAnInteger:
             despachos_paginados = paginator.page(1)
         except EmptyPage:
-            despachos_paginados = []
+            despachos_paginados = paginator.page(paginator.num_pages)
 
-        # Formatear respuesta
+        # Respuesta
         data = [
             {
                 "id": despacho.id,
@@ -1510,7 +1521,7 @@ def listar_despachos(request):
                 "fecha_numeracion": despacho.fecha_numeracion.strftime("%Y-%m-%d %H:%M:%S"),
                 "carta_porte": despacho.carta_porte,
                 "num_factura": despacho.num_factura,
-                "flete_pactado": f"$ {despacho.flete_pactado:.2}",
+                "flete_pactado": f"$ {despacho.flete_pactado:.2f}",
                 "peso_neto_crt": float(despacho.peso_neto_crt),
                 "fecha_llegada": despacho.fecha_llegada.strftime(
                     "%Y-%m-%d %H:%M:%S") if despacho.fecha_llegada else None,
@@ -1520,15 +1531,15 @@ def listar_despachos(request):
                     {
                         "numero_oc": oc.orden_compra.numero_oc,
                         "producto": oc.orden_compra.producto.nombre_producto,
-                        "precio_producto": f"{oc.orden_compra.precio_producto:.3}",
+                        "precio_producto": f"{oc.orden_compra.precio_producto:.2f}",
                         "cantidad": oc.orden_compra.cantidad,
                         "numero_recojo": oc.numero_recojo,
                         "cantidad_asignada": oc.cantidad_asignada
                     }
-                    for oc in despacho.ordenes_despacho.all()  # 🔹 Usar related_name
+                    for oc in despacho.ordenes_despacho.all()
                 ]
             }
-            for despacho in despachos
+            for despacho in despachos_paginados  # 🔹 aquí solo usamos los paginados
         ]
 
         return JsonResponse({
@@ -1541,6 +1552,7 @@ def listar_despachos(request):
 
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+
 
 def listar_data_despacho(request):
     try:
@@ -2033,13 +2045,639 @@ def generar_reporte_base_bd(request):
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
 
+#vistas para editar fletes
+def obtener_data_flete_ant(request):
+    id_despacho = request.GET.get('despacho_id')
+    if not id_despacho:
+        return JsonResponse({"error": "Falta el parámetro 'id'"}, status=400)
+
+    try:
+        despacho = Despacho.objects.filter(id=id_despacho).first()
+        if not despacho:
+            return JsonResponse({"error": "No se encontraron datos"}, status=404)
+
+        despacho_serializado = DespachoSerializer(despacho).data
+
+        response = {
+            "dataForm": construir_data_form(despacho_serializado),
+            "dataTable": construir_data_table(despacho_serializado["detalle_despacho"]),
+            "dataExtraForm": construir_data_extra(despacho_serializado["configuracion_despacho"], despacho_serializado)
+        }
+        return JsonResponse(response, status=200, safe=False)
+
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
+def obtener_data_flete(request):
+    id_despacho = request.GET.get('despacho_id')
+    if not id_despacho:
+        return JsonResponse({"error": "Falta el parámetro 'id'"}, status=400)
+
+    try:
+        despacho = Despacho.objects.get(id=id_despacho)
+
+        data = {
+            "general": despacho,
+            "detalle_despacho": despacho.detalledespacho_set.all(),
+            "configuracion_despacho": despacho.configuraciondespacho_set.all(),
+            "gastos_extra": despacho.gastosextra_set.all(),
+        }
+
+        serializer = DespachoCompletoSerializer(data)
+        return JsonResponse(serializer.data, safe=False, status=200)
+
+    except Despacho.DoesNotExist:
+        return JsonResponse({"error": "No se encontró el despacho"}, status=404)
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+
+@api_view(['PUT'])
+def actualizar_despacho(request, id):
+    try:
+        despacho = Despacho.objects.get(id=id)
+    except Despacho.DoesNotExist:
+        return Response({"error": "Despacho no encontrado"}, status=404)
+
+    data = request.data
+
+    # Actualizar campos del despacho
+    general_serializer = DespachoWriteSerializer(despacho, data=data.get("general"), partial=True)
+    if not general_serializer.is_valid():
+        return Response({"errors": general_serializer.errors}, status=400)
+    general_serializer.save()
+
+    # Limpiar y recrear ordenes_despacho
+    despacho.ordenes_despacho.all().delete()
+    ordenes_despacho_data = data.get("ordenes", {}).get("ordenes_despacho", [])
+    for orden in ordenes_despacho_data:
+        orden['despacho'] = despacho.id
+    orden_serializer = OrdenCompraDespachoWriteSerializer(data=ordenes_despacho_data, many=True)
+    if orden_serializer.is_valid():
+        orden_serializer.save()
+    else:
+        return Response({"errors": orden_serializer.errors}, status=400)
+
+    # Limpiar y recrear detalle despacho
+    despacho.detalledespacho_set.all().delete()
+    detalle_data = data.get("detalle_despacho", [])
+    for d in detalle_data:
+        d['despacho'] = despacho.id
+    detalle_serializer = DetalleDespachoWriteSerializer(data=detalle_data, many=True)
+    if detalle_serializer.is_valid():
+        detalle_serializer.save()
+    else:
+        return Response({"errors": detalle_serializer.errors}, status=400)
+
+    # Limpiar y recrear configuraciones
+    despacho.configuraciondespacho_set.all().delete()
+    config_data = data.get("configuracion_despacho", [])
+    for c in config_data:
+        c['despacho'] = despacho.id
+    config_serializer = ConfiguracionDespachoWriteSerializer(data=config_data, many=True)
+    if config_serializer.is_valid():
+        config_serializer.save()
+    else:
+        return Response({"errors": config_serializer.errors}, status=400)
+
+    # Limpiar y recrear gastos extra
+    despacho.gastosextra_set.all().delete()
+    gastos_data = data.get("gastos_extra", [])
+    for g in gastos_data:
+        g['despacho'] = despacho.id
+    gastos_serializer = GastosExtraWriteSerializer(data=gastos_data, many=True)
+    if gastos_serializer.is_valid():
+        gastos_serializer.save()
+    else:
+        return Response({"errors": gastos_serializer.errors}, status=400)
+
+    return Response({"message": "Despacho actualizado correctamente"}, status=200)
+
+
+@api_view(['GET', 'PUT'])
+def despacho_editar(request, pk):
+    try:
+        despacho = Despacho.objects.get(pk=pk)
+    except Despacho.DoesNotExist:
+        return Response({"error": "Despacho no encontrado"}, status=status.HTTP_404_NOT_FOUND)
+
+    if request.method == 'GET':
+        serializer = DespachoEditarSerializer(despacho)
+        return Response(serializer.data)
+
+    elif request.method == 'PUT':
+        serializer = EditarDespachoSerializer(despacho, data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class CrearProveedorView(generics.CreateAPIView):
+    queryset = ProveedorTransporte.objects.all()
+    serializer_class = ProveedorTransporteSerializer
+
+class CrearTransportistaView(generics.CreateAPIView):
+    queryset = Transportista.objects.all()
+    serializer_class = TransportistaSerializer
+
+@api_view(['GET'])
+def buscar_proveedores(request):
+    query = request.GET.get('query', '')
+    proveedores = ProveedorTransporte.objects.filter(
+        Q(nombre_proveedor__icontains=query)
+    )[:10]  # Limitamos resultados
+    serializer = ProveedorTransporteSerializer(proveedores, many=True)
+    return Response(serializer.data)
+
+@api_view(['GET'])
+def buscar_transportistas(request):
+    query = request.GET.get('query', '')
+    transportistas = Transportista.objects.filter(
+        Q(nombre_transportista__icontains=query)
+    )[:10]  # Limitamos resultados
+    serializer = TransportistaSerializer(transportistas, many=True)
+    return Response(serializer.data)
+
+
+# Listar detalles por despacho_id
+@api_view(['GET'])
+def obtener_detalles_despacho(request):
+    despacho_id = request.GET.get('despacho_id')
+    if not despacho_id:
+        return Response({'error': 'Falta el parámetro despacho_id'}, status=400)
+
+    detalles = DetalleDespacho.objects.filter(despacho_id=despacho_id)
+    serializer = DetalleDespachoEditarSerializer(detalles, many=True)
+    return Response(serializer.data)
+
+
+# Crear nuevo detalle
+@api_view(['POST'])
+def crear_detalle_despacho(request):
+    serializer = DetalleDespachoEditarSerializer(data=request.data)
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data, status=201)
+    return Response(serializer.errors, status=400)
+
+
+# Editar detalle
+@api_view(['PUT'])
+def editar_detalle_despacho(request, pk):
+    try:
+        detalle = DetalleDespacho.objects.get(pk=pk)
+    except DetalleDespacho.DoesNotExist:
+        return Response({'error': 'Detalle no encontrado'}, status=404)
+
+    serializer = DetalleDespachoEditarSerializer(detalle, data=request.data)
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data)
+    return Response(serializer.errors, status=400)
+
+# Eliminar detalle
+@api_view(['DELETE'])
+def eliminar_detalle_despacho(request, pk):
+    try:
+        detalle = DetalleDespacho.objects.get(pk=pk)
+    except DetalleDespacho.DoesNotExist:
+        return Response({'error': 'Detalle no encontrado'}, status=404)
+
+    detalle.delete()
+    return Response({'mensaje': 'Detalle eliminado'}, status=204)
+
+@api_view(['GET'])
+def obtener_configuracion_despacho(request):
+    despacho_id = request.GET.get('despacho_id')
+    if not despacho_id:
+        return Response({'error': "Falta el parámetro 'despacho_id'"}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        configuracion = ConfiguracionDespacho.objects.get(despacho_id=despacho_id)
+        serializer = ConfiguracionDespachoEditarSerializer(configuracion)
+        return Response(serializer.data)
+    except ConfiguracionDespacho.DoesNotExist:
+        return Response({'error': 'No existe configuración para ese despacho'}, status=status.HTTP_404_NOT_FOUND)
+
+@api_view(['PUT'])
+def editar_configuracion_despacho(request, pk):
+    try:
+        configuracion = ConfiguracionDespacho.objects.get(pk=pk)
+    except ConfiguracionDespacho.DoesNotExist:
+        return Response({'error': 'Configuración no encontrada'}, status=status.HTTP_404_NOT_FOUND)
+
+    serializer = ConfiguracionDespachoEditarSerializer(configuracion, data=request.data, partial=True)
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['GET'])
+def listar_gastos_extra(request):
+    despacho_id = request.GET.get('despacho_id')
+    if not despacho_id:
+        return Response({'error': 'Se requiere el parámetro despacho_id'}, status=400)
+
+    gastos = GastosExtra.objects.filter(despacho_id=despacho_id).order_by('-fecha_de_creacion')
+    serializer = GastosExtraSerializer(gastos, many=True)
+    return Response(serializer.data)
+
+@api_view(['POST'])
+def crear_gasto_extra(request):
+    serializer = GastosExtraSerializer(data=request.data)
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data, status=201)
+    return Response(serializer.errors, status=400)
+
+@api_view(['PUT', 'PATCH'])
+def editar_gasto_extra(request, pk):
+    try:
+        gasto = GastosExtra.objects.get(pk=pk)
+    except GastosExtra.DoesNotExist:
+        return Response({'error': 'Gasto extra no encontrado'}, status=404)
+
+    serializer = GastosExtraSerializer(gasto, data=request.data, partial=True)
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data)
+    return Response(serializer.errors, status=400)
+
+@api_view(['DELETE'])
+def eliminar_gasto_extra(request, pk):
+    try:
+        gasto = GastosExtra.objects.get(pk=pk)
+    except GastosExtra.DoesNotExist:
+        return Response({'error': 'Gasto extra no encontrado'}, status=404)
+
+    gasto.delete()
+    return Response({'mensaje': 'Gasto eliminado correctamente'}, status=204)
+
+class DespachoOrdenListCreateView(generics.ListCreateAPIView):
+    """
+    GET: Lista todas las órdenes asociadas a un despacho
+    POST: Crea una relación OrdenCompraDespacho + OC + Producto si es necesario
+    """
+    serializer_class = OrdenDespachoRowSerializer
+
+    def get_queryset(self):
+        despacho_id = self.kwargs['despacho_id']
+        return OrdenCompraDespacho.objects.filter(
+            despacho_id=despacho_id
+        ).select_related('orden_compra__empresa', 'orden_compra__producto')
+
+    def perform_create(self, serializer):
+        despacho_id = self.kwargs['despacho_id']
+        despacho = get_object_or_404(Despacho, pk=despacho_id)
+        serializer.save(despacho=despacho)
+
+class DespachoOrdenRetrieveUpdateDestroyView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    GET: Obtiene detalles combinados de una fila de despacho
+    PUT/PATCH: Actualiza datos de la fila y de la orden de compra relacionada
+    DELETE: Elimina la relación OrdenCompraDespacho (no la orden en sí)
+    """
+    serializer_class = OrdenDespachoRowSerializer
+    lookup_url_kwarg = 'orden_despacho_id'
+
+    def get_queryset(self):
+        despacho_id = self.kwargs['despacho_id']
+        return OrdenCompraDespacho.objects.filter(
+            despacho_id=despacho_id
+        ).select_related('orden_compra__empresa', 'orden_compra__producto')
+
+class EmpresaListView(generics.ListAPIView):
+    queryset = Empresa.objects.all().order_by('id')
+    serializer_class = EmpresaEditarSerializer
+
+class OrdenCompraDespachoViewSet(viewsets.ModelViewSet):
+    queryset = OrdenCompraDespacho.objects.all()
+    serializer_class = NewOrdenCompraDespachoSerializer
+
+    def get_queryset(self):
+        despacho_id = self.request.query_params.get('despacho_id')
+        if despacho_id:
+            return OrdenCompraDespacho.objects.filter(despacho_id=despacho_id)
+        return super().get_queryset()
+
+    def update(self, request, *args, **kwargs):
+        despacho_id = request.data.get("despacho")
+        instance = self.get_object()
+        if despacho_id and str(instance.despacho_id) != str(despacho_id):
+            return Response(
+                {"detail": "El despacho no coincide con la relación a actualizar."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        despacho_id = request.data.get("despacho") or request.query_params.get("despacho_id")
+        instance = self.get_object()
+        if despacho_id and str(instance.despacho_id) != str(despacho_id):
+            return Response(
+                {"detail": "El despacho no coincide con la relación a eliminar."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        instance.delete()
+        return Response({"detail": "Relación eliminada correctamente."}, status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=True, methods=['patch'], url_path="cambiar-orden")
+    def cambiar_orden(self, request, pk=None):
+        """
+        Reemplaza la OrdenCompra en una relación, manteniendo cantidad_asignada y numero_recojo
+        """
+        instance = self.get_object()
+        despacho_id = request.data.get("despacho")
+        nueva_orden_id = request.data.get("orden_compra_id")
+
+        if not despacho_id or not nueva_orden_id:
+            return Response(
+                {"detail": "Se requiere 'despacho' y 'orden_compra_id'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if str(instance.despacho_id) != str(despacho_id):
+            return Response(
+                {"detail": "El despacho no coincide con la relación a modificar."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            nueva_orden = OrdenCompra.objects.get(id=nueva_orden_id)
+        except OrdenCompra.DoesNotExist:
+            return Response({"detail": "La Orden de Compra no existe."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Validar que no se duplique (orden_compra + numero_recojo + despacho)
+        if OrdenCompraDespacho.objects.filter(
+            despacho_id=despacho_id,
+            orden_compra=nueva_orden,
+            numero_recojo=instance.numero_recojo
+        ).exclude(id=instance.id).exists():
+            return Response(
+                {"detail": "Ya existe esta Orden de Compra con el mismo número de recojo para este despacho."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Actualizar solo la orden_compra
+        instance.orden_compra = nueva_orden
+        instance.save()
+
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+@api_view(["POST"])
+def get_or_create_oc(request):
+    numero_oc = request.data.get("numero_oc")
+    defaults = {
+        "empresa_id": request.data.get("empresa_id"),
+        "producto_id": request.data.get("producto_id"),
+        "precio_producto": request.data.get("precio_producto"),
+        "cantidad": request.data.get("cantidad"),
+    }
+
+    oc, created = OrdenCompra.objects.get_or_create(
+        numero_oc=numero_oc,
+        defaults=defaults,
+    )
+
+    return Response(OrdenCompraSerializer(oc).data, status=status.HTTP_200_OK)
+
+@csrf_exempt
+@transaction.atomic
+def crear_oc_desde_externa(request):
+    """
+    Crea una OrdenCompra (y sus entidades relacionadas)
+    a partir de los datos devueltos por la base externa.
+    """
+    if request.method != 'POST':
+        return JsonResponse({'error': 'Método no permitido'}, status=405)
+
+    try:
+        data = json.loads(request.body)
+        base_datos = data.get('base_datos')
+        numero_oc = data.get('numero_oc')
+
+        if not base_datos or not numero_oc:
+            return JsonResponse({'error': 'Faltan parámetros requeridos'}, status=400)
+
+        # --- 1️⃣ Consultar la BD externa usando tu misma lógica ---
+        connection = get_db_connection(base_datos)
+        with connection.cursor() as cursor:
+            cursor.execute(f"""
+                SELECT TOP 1 
+                    i.CNUMERO,
+                    i.CDESARTIC,
+                    i.CCODARTIC,
+                    i.NCANTIDAD,
+                    i.CUNIDAD,
+                    i.NPREUNITA,
+                    i.NTOTVENT,
+                    o.CDESPROVE,
+                    o.CCODPROVE
+                FROM IMPORD i
+                INNER JOIN IMPORC o ON i.CNUMERO = o.CNUMERO
+                WHERE i.CNUMERO = %s
+            """, [numero_oc])
+            row = cursor.fetchone()
+
+        if not row:
+            return JsonResponse({'error': 'No se encontró la OC en la base externa'}, status=404)
+
+        # --- 2️⃣ Mapear los datos de la BD externa ---
+        datos = {
+            'numero_oc': row[0],
+            'producto': row[1],
+            'codigo_producto': row[2],
+            'cantidad': row[3],
+            'unidad_medida': row[4],
+            'precio_unitario': row[5],
+            'precio_total': row[6],
+            'proveedor': row[7],
+            'codprovee': row[8],
+        }
+
+        # --- 3️⃣ Crear o recuperar Empresa ---
+        empresa, empresa_creada = Empresa.objects.get_or_create(
+            nombre_empresa=datos['proveedor'],
+            defaults={'ruc': datos['codprovee']}
+        )
+
+        # --- 4️⃣ Crear o recuperar Producto ---
+        producto, producto_creado = Producto.objects.get_or_create(
+            codigo_producto=datos['codigo_producto'],
+            defaults={
+                'nombre_producto': datos['producto'],
+                'unidad_medida': datos['unidad_medida'],
+                'proveedor_marca': datos['proveedor']
+            }
+        )
+
+        # --- 5️⃣ Crear o recuperar OrdenCompra ---
+        oc, oc_creada = OrdenCompra.objects.get_or_create(
+            numero_oc=datos['numero_oc'],
+            defaults={
+                'empresa': empresa,
+                'producto': producto,
+                'cantidad': datos['cantidad'],
+                'precio_producto': datos['precio_unitario']
+            }
+        )
+
+        # --- 6️⃣ Respuesta estandarizada ---
+        return JsonResponse({
+            'orden_compra_id': oc.id,
+            'numero_oc': oc.numero_oc,
+            'empresa': empresa.nombre_empresa,
+            'producto': producto.nombre_producto,
+            'cantidad': oc.cantidad,
+            'precio_producto': float(oc.precio_producto),
+            'creada': oc_creada,
+            'empresa_creada': empresa_creada,
+            'producto_creado': producto_creado
+        }, status=201 if oc_creada else 200)
+
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=500)
+
+#aqui terminan las vistas para editar fletes
+
+def exportar_reporte_estiba_excel(request):
+    if request.method != 'GET':
+        return JsonResponse({'status': 'error', 'message': 'Método no permitido'}, status=405)
+
+    try:
+        fecha_inicio = request.GET.get('fecha_inicio', '').strip()
+        fecha_fin = request.GET.get('fecha_fin', '').strip()
+        empresa_bd = request.GET.get('empresa', '').strip()
+
+        # Mapeo a nombre comercial
+        if empresa_bd == "bd_trading_starsoft":
+            empresa = "TRADING SEMILLA SAC"
+        elif empresa_bd == "bd_semilla_starsoft":
+            empresa = "LA SEMILLA DE ORO SAC"
+        elif empresa_bd == "bd_maxi_starsoft":
+            empresa = "MAXIMILIAN INVERSIONES SA"
+        else:
+            empresa = empresa_bd  # fallback
+
+        try:
+            fecha_inicio_dt = make_aware(datetime.strptime(fecha_inicio, "%Y-%m-%d"))
+            fecha_fin_dt = make_aware(datetime.strptime(fecha_fin, "%Y-%m-%d"))
+        except ValueError:
+            return JsonResponse({'status': 'error', 'message': 'Formato de fecha inválido. Debe ser YYYY-MM-DD.'}, status=400)
+
+        resultados = list(DetalleDespacho.objects.filter(
+            Q(pago_estiba="No pago estiba") | Q(pago_estiba="Pago parcial"),
+            Q(despacho__fecha_llegada__isnull=False) & Q(despacho__fecha_llegada__range=(fecha_inicio_dt, fecha_fin_dt)),
+            Q(despacho__ordenes_compra__empresa__nombre_empresa=empresa_bd)
+        ).select_related(
+            'despacho',
+            'despacho__transportista',
+            'despacho__configuraciondespacho'
+        ).values(
+            'id',
+            'pago_estiba',
+            'despacho__fecha_llegada',
+            'despacho__dua',
+            'placa_llegada',
+            'sacos_descargados',
+            'cant_desc',
+            'despacho__configuraciondespacho__precio_estiba',
+            'despacho__transportista__nombre_transportista',
+            'despacho__ordenes_compra__empresa__nombre_empresa'
+        ).distinct())
+
+        total_general = 0
+        for row in resultados:
+            # Usa 4 como valor por defecto
+            precio_estiba = row['despacho__configuraciondespacho__precio_estiba']
+            precio_estiba = float(precio_estiba) if precio_estiba is not None else 4
+            print('precio estiba: ',precio_estiba)
+
+            if row['pago_estiba'] == "No pago estiba":
+                total_a_pagar = (row['sacos_descargados'] * 50 / 1000) * precio_estiba
+                row['sacos_pendientes_de_pago'] = row['sacos_descargados']
+            elif row['pago_estiba'] == "Pago parcial":
+                total_a_pagar = (row['cant_desc'] * 50 / 1000) * precio_estiba
+                row['sacos_pendientes_de_pago'] = row['cant_desc']
+            else:
+                total_a_pagar = 0
+
+            row['total_a_pagar'] = total_a_pagar
+            total_general += total_a_pagar
+
+        # Crear Excel
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Reporte Estiba"
+
+        from openpyxl.styles import Font, Alignment
+
+        # Primera fila: nombre de empresa (combinada)
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=11)
+        ws['A1'] = empresa.upper()
+        ws['A1'].font = Font(bold=True, size=14)
+        ws['A1'].alignment = Alignment(horizontal='center')
+
+        # Segunda fila: espacio
+        ws.append([""] * 11)
+
+        # Tercera fila: rango de fechas
+        ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=11)
+        ws['A3'] = f"REPORTE DE ESTIBAJE DEL: {fecha_inicio} HASTA {fecha_fin}"
+        ws['A3'].font = Font(bold=True, size=12)
+        ws['A3'].alignment = Alignment(horizontal='center')
+
+        # Cuarta fila: cabeceras de tabla
+        headers = [
+            "ID", "Pago Estiba", "Fecha Llegada", "DUA", "Placa", "Sacos Descargados", "Cant. Desc.",
+            "Transportista", "Empresa", "Sacos Pendientes de Pago", "Total a Pagar"
+        ]
+        ws.append(headers)
+
+        for row in resultados:
+            ws.append([
+                row['id'],
+                row['pago_estiba'],
+                row['despacho__fecha_llegada'].strftime('%Y-%m-%d') if row['despacho__fecha_llegada'] else '',
+                row['despacho__dua'],
+                row['placa_llegada'],
+                row['sacos_descargados'],
+                row['cant_desc'],
+                row['despacho__transportista__nombre_transportista'],
+                empresa,  # mostrar el nombre comercial
+                row['sacos_pendientes_de_pago'],
+                row['total_a_pagar']
+            ])
+
+        # Fila final con total
+        ultima_fila = ws.max_row + 1
+        ws.cell(row=ultima_fila, column=10, value="TOTAL GENERAL:")
+        ws.cell(row=ultima_fila, column=11, value=round(total_general, 2))
+
+        # Guardar y responder
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+
+        filename = f"reporte_estiba_{fecha_inicio}_{fecha_fin}.xlsx"
+        response = HttpResponse(
+            output,
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        response['Content-Disposition'] = f'attachment; filename={filename}'
+        return response
+
+    except Exception as e:
+        return JsonResponse({'status': 'error', 'message': str(e)}, status=500)
+
 def sanear_y_procesar_data(data):
+
     empresa_bd = data['ordenes_compra'][0].get('empresa').get('nombre_empresa')
     empresa = 'NO DETECTADA'
     if empresa_bd == "bd_trading_starsoft":
         empresa = "TRADING SEMILLA SAC"
     elif empresa_bd == "bd_semilla_starsoft":
-        empresa = "LA SEMILLA SEMILLA DE ORO SAC"
+        empresa = "LA SEMILLA DE ORO SAC"
     elif empresa_bd == "bd_maxi_starsoft":
         empresa = "MAXIMILIAN INVERSIONES SA"
     data['empresa'] = empresa
@@ -2170,11 +2808,27 @@ def sanear_y_procesar_data(data):
     aux_descuento = descuento_por_diferencia_peso + total_descuento_sacos_faltantes + descuento_sacos_rotos + descuento_sacos_humedos + descuento_sacos_mojados
 
     total_otros_gastos=0.00
-
     for item in data['gastos_extra']:
-        total_otros_gastos += item.get('monto', 0.00)
+        try:
+            monto = float(item.get('monto', 0.00) or 0.00)
+        except ValueError:
+            monto = 0.00
+
+        total_otros_gastos += monto
+        otros_gastos.append({
+            "id": item.get("id"),
+            "descripcion": item.get("descripcion", ""),
+            "monto": monto  # ahora es float
+        })
+
 
     total_dsct_sin_gastos_otros = round((descuento_por_diferencia_peso + total_descuento_estiba + total_descuento_sacos_faltantes + descuento_sacos_rotos + descuento_sacos_humedos + descuento_sacos_mojados),2)
+
+    total_dsct_con_otros_gastos = round((descuento_por_diferencia_peso +
+                                         total_descuento_estiba + total_descuento_sacos_faltantes +
+                                         descuento_sacos_rotos + descuento_sacos_humedos +
+                                         descuento_sacos_mojados + total_otros_gastos),
+                                        2)
 
     total_dsct = round((descuento_por_diferencia_peso + total_descuento_estiba + total_descuento_sacos_faltantes + descuento_sacos_rotos + descuento_sacos_humedos + descuento_sacos_mojados + total_otros_gastos),2)
 
@@ -2217,6 +2871,7 @@ def sanear_y_procesar_data(data):
     data['total_descuento_estiba']=total_descuento_estiba
     data['aux_descuento'] = aux_descuento
     data['total_dsct_sin_gastos_otros']=total_dsct_sin_gastos_otros
+    data['total_dsct_con_otros_gastos']=total_dsct_con_otros_gastos
     data['total_dsct']=total_dsct
     data['otros_gastos']=otros_gastos
     data['total_otros_gastos'] = total_otros_gastos
@@ -2585,7 +3240,7 @@ def generar_reporte_pdf_con_data_bd(data):
             ["G.N", f"{data['configuracion_despacho'][0]['gastos_nacionalizacion']}"],
             ["MF CIA", f"{data['configuracion_despacho'][0]['margen_financiero']}"],
             ["IGV 18%", f"{data['igv']}"],
-            ["PRECIO DES", f"{data['precio_bruto_final']}"],
+            ["PRECIO DES", f"{data['precio_bruto_final']:.2f}"],
             ["COSTO TM", f"{data['precio_por_tonelada_final']}"],
             ["COSTO Kg", f"{data['precio_por_kg']}"],
         ]
@@ -2686,12 +3341,25 @@ def generar_reporte_pdf_con_data_bd(data):
             )
             current_y -= line_height
 
+        for gasto in data['otros_gastos']:
+            descripcion = gasto.get("descripcion", "")
+            monto = gasto.get("monto", 0.00)
+
+            c.drawString(
+                x_start,
+                current_y,
+                f"B/V 004-:        {descripcion} $ {monto:.2f}"
+            )
+            current_y -= line_height
+
+
+
         # Total
         c.setFont("Helvetica-Bold", 8)
         c.drawString(
             x_start,
             current_y - 5,
-            f"TOTAL A DESCONTAR:   $ {data['total_dsct_sin_gastos_otros']:.2f}"
+            f"TOTAL A DESCONTAR:   $ {data['total_dsct_con_otros_gastos']:.2f}"
         )
 
         # Guardar el PDF en el buffer
@@ -2935,14 +3603,21 @@ class AsignarDeclaracionDesdeComprimidoView(APIView):
             carpeta = asignacion.get("carpeta")
             numero = asignacion.get("numero_dua")
             anio = asignacion.get("anio")
+            numero = numero.lstrip('0')
 
             if not carpeta or not numero or not anio:
                 continue
 
             try:
-                declaracion, _ = Declaracion.objects.get_or_create(numero=numero, anio=anio)
-            except IntegrityError:
-                declaracion = Declaracion.objects.get(numero=numero, anio=anio)
+                numero = numero.lstrip('0')  # <-- normalizar antes de buscar
+                declaracion, created = Declaracion.objects.get_or_create(numero=numero, anio=anio)
+            except Declaracion.MultipleObjectsReturned:
+                declaracion = Declaracion.objects.filter(numero=numero, anio=anio).first()
+            except Declaracion.DoesNotExist:
+                return Response(
+                    {"error": f"No se pudo encontrar ni crear la declaración {numero}-{anio}."},
+                    status=404
+                )
 
             for file_name in archivo_comp.namelist():
                 if file_name.startswith(carpeta) and not file_name.endswith("/"):
@@ -3283,49 +3958,11 @@ class DocumentosRelacionadosAPIView(APIView):
 
 class CombinarPDFsDeclaracionView(APIView):
     def post(self, request, numero, anio):
-        declaracion = get_object_or_404(Declaracion, numero=numero, anio=anio)
-        documentos = Documento.objects.filter(declaracion=declaracion, nombre_original__iendswith=".pdf")
-
-        if not documentos.exists():
-            return Response({"error": "No hay documentos PDF para combinar"}, status=400)
-
-        merger = PdfMerger()
-        for doc in documentos:
-            path = doc.archivo.path
-            if os.path.exists(path):
-                merger.append(path)
-
-        # Guardar el PDF combinado en memoria
-        output = io.BytesIO()
-        merger.write(output)
-        merger.close()
-        output.seek(0)
-
-        return FileResponse(
-            output,
-            as_attachment=True,
-            content_type="application/pdf",
-            filename=f"{numero}-{anio}_combinado.pdf"
-        )
+        return Response({"detail": "ok."}, status=status.HTTP_200_OK)
 
 class AgregarDocumentosExistentesAPIView(APIView):
     def post(self, request, expediente_id):
-        documento_ids = request.data.get("documento_ids", [])
-        expediente = ExpedienteDeclaracion.objects.get(id=expediente_id)
-        merger = PdfMerger()
-
-        for doc_id in documento_ids:
-            doc = Documento.objects.get(id=doc_id)
-            merger.append(doc.archivo.file)
-
-        output = io.BytesIO()
-        merger.write(output)
-        merger.close()
-
-        expediente.archivo_pdf.save(f"expediente_{expediente.id}_modificado.pdf", ContentFile(output.getvalue()))
-        expediente.save()
-
-        return Response({"detail": "Documentos agregados al expediente."}, status=status.HTTP_200_OK)
+        return Response({"detail": "ok"}, status=status.HTTP_200_OK)
 
 class ReordenarPaginasAPIView(APIView):
     def post(self, request, expediente_id):
@@ -3723,6 +4360,205 @@ class ActualizarOrdenCompraNotaIngresoView(APIView):
             {"detail": "Orden de compra y Nota de ingreso, actualizados correctamente"},
             status=status.HTTP_200_OK
         )
+
+class ActualizarFechaLlegadaFleteView(APIView):
+    def post(self, request, pk):
+        fecha_str = request.data.get('fecha_llegada')
+
+        if not fecha_str:
+            return Response({"error": "Se requiere el campo 'fecha_llegada'."}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            fecha = datetime.strptime(fecha_str, "%Y-%m-%d")
+        except ValueError:
+            return Response({"error": "Formato de fecha inválido. Use YYYY-MM-DD."}, status=status.HTTP_400_BAD_REQUEST)
+
+        despacho = get_object_or_404(Despacho, pk=pk)
+        despacho.fecha_llegada = fecha
+        despacho.save()
+
+        return Response({"message": "Fecha de llegada actualizada correctamente."}, status=status.HTTP_200_OK)
+
+
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36',
+    'Referer': 'https://servicios.senasa.gob.pe/ConsultaRecibos/'
+}
+
+
+class SenasaConsultaView(APIView):
+    def post(self, request):
+        expediente = request.data.get('expediente')
+        ruc = request.data.get('ruc', '')
+
+        print(f"--- INICIO CONSULTA SENASA: {expediente} ---")
+
+        if not expediente:
+            return Response({"error": "Falta expediente"}, status=400)
+
+        URL_SEARCH = "https://servicios.senasa.gob.pe/ConsultaRecibos/consulta"
+
+        # Headers para parecer un navegador real
+        HEADERS = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': 'https://servicios.senasa.gob.pe/ConsultaRecibos/',
+            'Origin': 'https://servicios.senasa.gob.pe',
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+        }
+
+        try:
+            payload = {
+                'C': 'RECIBO', 'S': 'SEARCH',
+                'pcodigoexpediente': expediente, 'pruc': ruc,
+                'start': 0, 'limit': 50
+            }
+
+            # 1. AGREGAMOS TIMEOUT: Si SENASA no responde en 15 seg, cortamos.
+            print("Enviando petición a SENASA...")
+            resp = requests.post(URL_SEARCH, data=payload, headers=HEADERS, timeout=15)
+
+            print(f"Respuesta SENASA Status: {resp.status_code}")
+
+            # Si el status no es 200, lanzamos error manual
+            resp.raise_for_status()
+
+            raw_data = resp.json()
+
+            # Validación de respuesta vacía o error
+            if isinstance(raw_data, dict) and not raw_data:
+                print("SENASA devolvió diccionario vacío")
+                return Response({"msg": "No se encontraron datos", "detalles": []})
+
+            resultados = []
+
+            # Procesamiento de la lista
+            if isinstance(raw_data, list):
+                for row in raw_data:
+                    # Aseguramos que existan los índices para no crashear
+                    if len(row) > 4:
+                        nro_recibo = row[0]
+                        monto = row[1]
+                        fecha = row[3]
+                        ucmid_sucio = row[4]
+
+                        ucmid = ucmid_sucio.replace('|', '') if ucmid_sucio else None
+
+                        if ucmid:
+                            resultados.append({
+                                "nro": nro_recibo,
+                                "monto": monto,
+                                "fecha": fecha,
+                                "ucmid": ucmid,
+                                "expediente": expediente,  # Devolvemos esto para usarlo en la descarga
+                                "ruc": ruc,  # Devolvemos esto para usarlo en la descarga
+                                "status": "Disponible"
+                            })
+
+            print(f"Resultados procesados: {len(resultados)}")
+            return Response({"msg": "Búsqueda exitosa", "detalles": resultados})
+
+        except requests.exceptions.Timeout:
+            print("ERROR: Timeout - SENASA tardó demasiado en responder.")
+            return Response({"error": "El servidor de SENASA está lento o caído. Intente de nuevo."}, status=504)
+
+        except requests.exceptions.ConnectionError:
+            print("ERROR: ConnectionError - No se pudo conectar a SENASA.")
+            return Response({"error": "No hay conexión con SENASA (Posible bloqueo de IP)."}, status=502)
+
+        except Exception as e:
+            # ESTO ES LO QUE NECESITAMOS VER EN LA CONSOLA
+            print("\n" + "=" * 30)
+            print("CRASH EN BACKEND - TRAZA COMPLETA:")
+            print(traceback.format_exc())
+            print("=" * 30 + "\n")
+            return Response({"error": f"Error interno: {str(e)}"}, status=500)
+
+
+class SenasaDescargaProxyView(APIView):
+    def get(self, request):
+        # Ahora pedimos el Expediente y el Nro Recibo para regenerar la sesión
+        expediente = request.query_params.get('expediente')
+        nro_recibo = request.query_params.get('nro')
+        ruc = request.query_params.get('ruc', '')
+
+        if not expediente or not nro_recibo:
+            return Response({"error": "Faltan datos (expediente o nro recibo)"}, status=400)
+
+        URL_SEARCH = "https://servicios.senasa.gob.pe/ConsultaRecibos/consulta"
+        URL_DOWNLOAD = "https://servicios.senasa.gob.pe/sig/upload"
+
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36',
+            'Referer': 'https://servicios.senasa.gob.pe/ConsultaRecibos/',
+            # Headers importantes para que Java no bloquee la descarga
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        })
+
+        try:
+            # PASO 1: RE-AUTENTICACIÓN (Hacer la búsqueda para obtener contexto y ID válido)
+            #print(f"--- [Proxy] Re-consultando expediente {expediente} para validar sesión ---")
+            payload = {
+                'C': 'RECIBO', 'S': 'SEARCH',
+                'pcodigoexpediente': expediente, 'pruc': ruc,
+                'start': 0, 'limit': 50
+            }
+
+            search_resp = session.post(URL_SEARCH, data=payload)
+            raw_data = search_resp.json()
+
+            # Buscamos el ID correcto (ucmid) para este recibo específico
+            target_ucmid = None
+
+            if isinstance(raw_data, list):
+                for row in raw_data:
+                    # row[0] es el número de recibo, row[4] es el UCMID
+                    if str(row[0]) == str(nro_recibo):
+                        target_ucmid = row[4]  # TOMAMOS EL ID CRUDO (CON EL PIPE |)
+                        break
+
+            if not target_ucmid:
+                return Response({"error": "No se encontró el recibo o ID en SENASA"}, status=404)
+
+            # PASO 2: DESCARGAR CON EL ID EXACTO
+            #print(f"--- [Proxy] Descargando ID: {target_ucmid} ---")
+
+            params = {
+                'C': 'DLWUCM',
+                'fn': random.random(),
+                'idx': target_ucmid,  # Enviamos "|5191..." tal cual
+                'fns': f"{nro_recibo}.pdf"
+            }
+
+            # Usamos la MISMA session que hizo la búsqueda
+            pdf_resp = session.get(URL_DOWNLOAD, params=params, stream=True)
+
+            if pdf_resp.status_code == 200:
+                # Verificación final de que es un PDF y no un error Java disfrazado
+                chunk_inicial = next(pdf_resp.iter_content(64))  # Leemos los primeros bytes
+
+                # Si empieza con %PDF es éxito
+                if b'%PDF' in chunk_inicial:
+                    # Reconstruimos el generador para la respuesta completa
+                    def file_iterator():
+                        yield chunk_inicial
+                        yield from pdf_resp.iter_content(chunk_size=8192)
+
+                    response = HttpResponse(file_iterator(), content_type='application/pdf')
+                    response['Content-Disposition'] = f'attachment; filename="{nro_recibo}.pdf"'
+                    return response
+                else:
+                    # Si no es PDF, devolvemos el error que mandó SENASA para debug
+                    return Response({
+                        "error": "SENASA devolvió contenido inválido",
+                        "content": chunk_inicial.decode('utf-8', errors='ignore')
+                    }, status=502)
+
+            return Response({"error": "Error HTTP en descarga"}, status=pdf_resp.status_code)
+
+        except Exception as e:
+            print(f"ERROR: {e}")
+            return Response({"error": str(e)}, status=500)
 
 
 

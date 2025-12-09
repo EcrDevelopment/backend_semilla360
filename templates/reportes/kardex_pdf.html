@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Reporte de KARDEX</title>
+    <style>
+        @page {
+            size: A4;
+            margin: 1.5cm;
+            @bottom-right {
+                content: "Página " counter(page) " de " counter(pages);
+                font-family: 'Helvetica', sans-serif;
+                font-size: 8pt;
+            }
+        }
+
+        body {
+            font-family: 'Helvetica', sans-serif;
+            font-size: 9pt;
+            color: #333;
+        }
+
+        .header {
+            text-align: center;
+            border-bottom: 2px solid #005f73;
+            padding-bottom: 10px;
+            margin-bottom: 20px; /* Un poco de aire antes de la data */
+        }
+
+        .header h1 { color: #005f73; margin: 0; font-size: 13pt; }
+        .header p { margin: 2px 0; font-size: 8pt; color: #666; }
+
+        /* --- CORRECCIÓN AQUÍ --- */
+        .product-section {
+            margin-bottom: 30px;
+            /* ELIMINADO: page-break-inside: avoid; */
+            /* Dejamos que fluya naturalmente */
+        }
+
+        .product-title {
+            background-color: #e9ecef;
+            padding: 8px;
+            font-weight: bold;
+            font-size: 8pt;
+            border-left: 5px solid #0a9396;
+            margin-bottom: 10px;
+
+            /* AGREGADO: Esto mantiene el título pegado a la tabla */
+            page-break-after: avoid;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 15px;
+            /* AGREGADO: Para evitar que la tabla se rompa justo después del thead si hay poco espacio */
+            page-break-inside: auto;
+        }
+
+        /* AGREGADO: Repite el encabezado de la tabla en cada página nueva */
+        thead {
+            display: table-header-group;
+        }
+
+        /* AGREGADO: Evita que una fila se corte horizontalmente a la mitad */
+        tr {
+            page-break-inside: avoid;
+            page-break-after: auto;
+        }
+
+        th, td {
+            border: 1px solid #ddd;
+            padding: 6px;
+            text-align: left;
+            font-size: 7pt;
+        }
+
+        th {
+            background-color: #f8f9fa;
+            font-weight: bold;
+            text-transform: uppercase;
+            font-size: 8pt;
+        }
+
+        .text-right { text-align: right; }
+        .text-center { text-align: center; }
+        .entrada { color: #2a9d8f; }
+        .salida { color: #e76f51; }
+        .saldo { font-weight: bold; }
+        .no-data { font-style: italic; color: #999; text-align: center; padding: 10px; }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1>REPORTE DE KARDEX</h1>
+        <h2>{{ empresa_nombre }}</h2>
+        <p>Generado el: {% now "d/m/Y H:i" %}</p>
+        <p>Rango: {{ fecha_inicio }} al {{ fecha_fin }}</p>
+    </div>
+
+    {% for id, producto in kardex_items.items %}
+
+    <div class="product-section">
+        <div class="product-title">
+            {{ producto.codigo_producto }} - {{ producto.nombre_producto }}
+            <span style="float:right; font-weight:normal; font-size:6pt;">
+                Unidad: {{ producto.unidad_medida|default:"KG" }}
+            </span>
+        </div>
+
+        <table>
+            <thead>
+                <tr>
+                    <th style="width: 12%">Fecha</th>
+                    <th style="width: 15%">Documento</th>
+                    <th style="width: 35%">Detalle</th>
+                    <th style="width: 12%" class="text-right">Entrada</th>
+                    <th style="width: 12%" class="text-right">Salida</th>
+                    <th style="width: 14%" class="text-right">Saldo</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for mov in producto.kardex %}
+                <tr>
+                    <td class="text-center">{{ mov.fecha|date:"d/m/Y" }}</td>
+                    <td>{{ mov.doc|default:"-" }}</td>
+                    <td>{{ mov.detalle }}</td>
+
+                    <td class="text-right entrada">
+                        {% if mov.entrada > 0 %}{{ mov.entrada|floatformat:2 }}{% else %}-{% endif %}
+                    </td>
+
+                    <td class="text-right salida">
+                        {% if mov.salida > 0 %}{{ mov.salida|floatformat:2 }}{% else %}-{% endif %}
+                    </td>
+
+                    <td class="text-right saldo">
+                        {{ mov.saldo|floatformat:2 }}
+                    </td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="6" class="no-data">Sin movimientos en este periodo</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    {% empty %}
+        <p class="text-center">No se encontraron datos</p>
+    {% endfor %}
+
+</body>
+</html>
