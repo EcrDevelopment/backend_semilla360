@@ -1523,10 +1523,4 @@ Con las mejoras propuestas, el módulo alcanzará estándares de seguridad nivel
 **Fecha:** Diciembre 2024  
 **Versión del Módulo:** 1.0  
 **Repositorio:** github.com/EcrDevelopment/backend_semilla360
-'''
-with open('DOCUMENTACION_USUARIOS_DETALLADA.md', 'w', encoding='utf-8') as f:
-    f.write(content)
-print('✓ Documentación usuarios completada')
-"
-wc -l DOCUMENTACION_USUARIOS_DETALLADA.md
 
